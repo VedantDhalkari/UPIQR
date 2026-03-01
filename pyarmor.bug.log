@@ -1,0 +1,39 @@
+[BUG]: out of license
+
+## Command Line
+D:\files\.venv\Scripts\pyarmor gen -O obfuscated_dist auth.py billing.py bill_management.py boutique_management_system.py calculator.py charts.py config.py dashboard.py database.py debug_check.py debug_passfix.py debug_pin.py debug_users.py generate_sample_data.py invoice_generator.py license_manager.py main.py new_stock.py reports.py reset_pass.py rewrite.py search.py settings.py stock.py test_logo.py test_search_ui.py ui_components.py
+
+## Environments
+Python 3.12.10
+Pyarmor 9.2.3 (trial), 000000, non-profits
+Platform windows.x86_64
+Native windows.amd64
+Home C:\Users\vedan\.pyarmor
+
+## Traceback
+Traceback (most recent call last):
+  File "D:\files\.venv\Lib\site-packages\pyarmor\cli\__main__.py", line 796, in main
+    main_entry(sys.argv[1:])
+  File "D:\files\.venv\Lib\site-packages\pyarmor\cli\__main__.py", line 789, in main_entry
+    return args.func(ctx, args)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "D:\files\.venv\Lib\site-packages\pyarmor\cli\__main__.py", line 248, in cmd_gen
+    builder.process(options)
+  File "D:\files\.venv\Lib\site-packages\pyarmor\cli\generate.py", line 188, in process
+    self._obfuscate_scripts()
+  File "D:\files\.venv\Lib\site-packages\pyarmor\cli\generate.py", line 144, in _obfuscate_scripts
+    code = Pytransform3.generate_obfuscated_script(self.ctx, r)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\files\.venv\Lib\site-packages\pyarmor\cli\core\__init__.py", line 95, in generate_obfuscated_script
+    return m.generate_obfuscated_script(ctx, res)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<maker>", line 728, in generate_obfuscated_script
+  File "D:\files\.venv\Lib\site-packages\pyarmor\cli\__init__.py", line 16, in process
+    return meth(self, res, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<maker>", line 553, in process
+  File "<maker>", line 559, in coserialize
+  File "<maker>", line 609, in _build_ast_body
+RuntimeError: out of license
+
+

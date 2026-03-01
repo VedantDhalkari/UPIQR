@@ -1,0 +1,931 @@
+"""
+Billing Module
+Invoice creation, cart management, and checkout with premium light theme
+"""
+
+import customtkinter as ctk
+from tkinter import messagebox, ttk
+from datetime import datetime
+import os
+import subprocess
+import config
+from ui_components import AnimatedButton, PageHeader
+from datetime import datetime
+import os
+import customtkinter as ctk
+from tkinter import messagebox, ttk
+from tkcalendar import DateEntry
+
+
+class BillingModule(ctk.CTkFrame):
+    """Billing and invoice creation interface (Tabular)"""
+    
+    def __init__(self, parent, db_manager, invoice_generator, current_user, sale_id=None, **kwargs):
+        super().__init__(parent, fg_color="transparent", **kwargs)
+        
+        self.db = db_manager
+        self.invoice_gen = invoice_generator
+        self.current_user = current_user
+        self.cart = []
+        self.editing_sale_id = sale_id 
+        
+        # Apply Base Font Size
+        try:
+            base_size = int(self.db.get_setting("base_font_size") or 12)
+        except:
+            base_size = 12
+            
+        self.font_sm = max(base_size - 2, 8)
+        self.font_md = max(base_size - 1, 9)
+        self.font_lg = base_size
+        self.font_xl = max(base_size + 2, 12)
+        
+        # Header
+        title = f"Edit Bill #{sale_id}" if sale_id else "New Bill / Invoice"
+        self.header = PageHeader(self, title=title)
+        self.header.pack(fill="x", pady=(0, config.SPACING_SM))
+        
+        # Main scrollable container
+        self.content_scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.content_scroll.pack(fill="both", expand=True)
+        
+        self._setup_header_form(sale_id)
+        self._setup_item_entry()
+        self._setup_grid()
+        self._setup_footer(sale_id)
+        
+        if self.editing_sale_id:
+            self.after(100, self._load_sale_for_editing)
+
+    def _setup_header_form(self, sale_id):
+        card = ctk.CTkFrame(self.content_scroll, fg_color=config.COLOR_BG_CARD)
+        card.pack(fill="x", pady=(0, config.SPACING_SM), padx=config.SPACING_SM)
+        
+        cw = ctk.CTkFrame(card, fg_color="transparent")
+        cw.pack(fill="x", padx=10, pady=10)
+        
+        for i in range(5): cw.grid_columnconfigure(i, weight=1)
+        
+        self.bill_no_entry = self._create_labeled_input(cw, "Bill No (Auto)", 0)
+        if not sale_id:
+            self.bill_no_entry.insert(0, "Auto-Generated")
+            self.bill_no_entry.configure(state="readonly")
+            
+        ctk.CTkLabel(cw, text="Bill Date", font=("Arial", self.font_md)).grid(row=0, column=1, sticky="w", padx=5)
+        self.bill_date_entry = DateEntry(cw, width=12, background=config.COLOR_PRIMARY,
+                                        foreground='white', borderwidth=2, date_pattern='dd/mm/yyyy')
+        self.bill_date_entry.grid(row=1, column=1, sticky="ew", padx=5, pady=2)
+        
+        self.customer_name_entry = self._create_labeled_input(cw, "Customer Name", 2)
+        self.customer_phone_entry = self._create_labeled_input(cw, "Customer Phone", 3)
+        
+        try:
+            res = self.db.execute_query("SELECT final_amount FROM sales ORDER BY sale_id DESC LIMIT 1")
+            last_amt = res[0][0] if res else 0.0
+        except: last_amt = 0.0
+        
+        last_bill_frame = ctk.CTkFrame(cw, fg_color=config.COLOR_PRIMARY_LIGHT, corner_radius=config.RADIUS_MD)
+        last_bill_frame.grid(row=0, column=4, rowspan=2, padx=10, sticky="e")
+        ctk.CTkLabel(last_bill_frame, text="Last Bill Amount:", font=("Arial", self.font_sm, "bold"), text_color=config.COLOR_PRIMARY).pack(padx=10, pady=(5,0))
+        self.last_bill_amount_lbl = ctk.CTkLabel(last_bill_frame, text=f"₹{last_amt:,.2f}", font=("Arial", self.font_lg, "bold"), text_color=config.COLOR_TEXT_PRIMARY)
+        self.last_bill_amount_lbl.pack(padx=10, pady=(0,5))
+
+    def _setup_item_entry(self):
+        card = ctk.CTkFrame(self.content_scroll, fg_color=config.COLOR_BG_CARD)
+        card.pack(fill="x", pady=(0, config.SPACING_SM), padx=config.SPACING_SM)
+        
+        top_bar = ctk.CTkFrame(card, fg_color="transparent")
+        top_bar.pack(fill="x", padx=10, pady=(5,0))
+        ctk.CTkLabel(top_bar, text="Item Entry", font=("Arial", self.font_lg, "bold"), text_color="gray").pack(side="left")
+        ctk.CTkButton(top_bar, text="🔍 Search Items", width=120, height=25, fg_color=config.COLOR_SECONDARY, command=self._open_search_dialog).pack(side="right")
+        
+        cw = ctk.CTkFrame(card, fg_color="transparent")
+        cw.pack(fill="x", padx=5, pady=5)
+        
+        fields = ["Barcode/SKU", "Item Name*", "Avail Qty", "Price*", "Qty*"]
+        self.entry_vars = {}
+        
+        for i, f in enumerate(fields):
+            cw.grid_columnconfigure(i, weight=1)
+            ctk.CTkLabel(cw, text=f, font=("Arial", self.font_sm)).grid(row=0, column=i, sticky="w", padx=2)
+            
+            entry = ctk.CTkEntry(cw, height=28)
+            entry.grid(row=1, column=i, sticky="ew", padx=2, pady=(0, 5))
+            
+            key = f.split("*")[0].split("(")[0].replace("/", "_").replace(" ", "_").lower()
+            if key == "avail_qty": entry.configure(state="readonly")
+            self.entry_vars[key] = entry
+            
+            if "barcode" in key:
+                entry.bind("<Return>", self._on_sku_enter)
+                entry.placeholder_text = "Scan/Enter"
+                
+        self.current_item_id = None
+        self.current_avail_qty = 9999
+                
+        self.add_btn = ctk.CTkButton(cw, text="⬇ Add", width=60, command=self._add_to_grid)
+        self.add_btn.grid(row=1, column=len(fields), padx=5)
+
+    def _setup_grid(self):
+        # Scrollable Grid Container
+        self.grid_frame = ctk.CTkFrame(self.content_scroll, fg_color="transparent", height=250)
+        self.grid_frame.pack(fill="x", padx=config.SPACING_SM, pady=(0, config.SPACING_SM))
+        
+        # Configure Treeview Style
+        style = ttk.Style()
+        row_height = max(int(self.font_md * 2.5), 20)
+        style.theme_use('default')
+        style.configure("Billing.Treeview", background="white", foreground="black", rowheight=row_height, fieldbackground="white", font=("Arial", self.font_md), borderwidth=0)
+        style.configure("Billing.Treeview.Heading", background=config.COLOR_PRIMARY, foreground="white", font=("Arial", max(self.font_md, 12), "bold"), relief="flat")
+        style.map("Billing.Treeview.Heading", background=[('active', config.COLOR_PRIMARY_DARK)])
+        style.map("Billing.Treeview", background=[('selected', '#B4D5F0')])
+        
+        self.columns = ("sr", "sku", "barcode", "name", "price", "qty", "total")
+        self.tree = ttk.Treeview(self.grid_frame, columns=self.columns, show="headings", style="Billing.Treeview", height=8)
+        
+        vsb = ttk.Scrollbar(self.grid_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set)
+        
+        self.tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        
+        headings = [
+            ("sr", "Sr. No", 60),
+            ("sku", "SKU", 120),
+            ("barcode", "Barcode", 130),
+            ("name", "Item Name", 300),
+            ("price", "Price", 100),
+            ("qty", "Qty", 80),
+            ("total", "Total", 130)
+        ]
+        
+        for col, text, width in headings:
+            self.tree.heading(col, text=text, anchor="center" if col != "name" else "w")
+            self.tree.column(col, width=width, anchor="center" if col != "name" else "w", stretch=True if col == "name" else False)
+            
+        self.tree.bind("<Double-1>", self._on_grid_double_click)
+        self.tree.bind("<Delete>", lambda e: self._delete_selected_item())
+        self.tree.bind("<BackSpace>", lambda e: self._delete_selected_item())
+        
+        # Action Instruction
+        ctk.CTkLabel(self.content_scroll, text="Tip: Double-click Name, Price or Qty to edit inline. Press Delete to remove row.", font=("Arial", self.font_sm), text_color="gray").pack(anchor="e", padx=20)
+        
+    def _setup_footer(self, sale_id):
+        footer = ctk.CTkFrame(self.content_scroll, fg_color=config.COLOR_BG_CARD)
+        footer.pack(fill="x", padx=config.SPACING_SM, pady=(0, config.SPACING_SM))
+        
+        left = ctk.CTkFrame(footer, fg_color="transparent")
+        left.pack(side="left", fill="both", expand=True, padx=20, pady=10)
+        
+        right = ctk.CTkFrame(footer, fg_color="transparent")
+        right.pack(side="right", fill="both", expand=True, padx=20, pady=10)
+        
+        self.subtotal_label = ctk.CTkLabel(left, text="Subtotal: ₹0.00", font=("Arial", self.font_md), text_color="gray")
+        self.subtotal_label.pack(anchor="w", pady=2)
+        
+        discount_frame = ctk.CTkFrame(left, fg_color="transparent")
+        discount_frame.pack(anchor="w", fill="x", pady=2)
+        ctk.CTkLabel(discount_frame, text="Discount %:", font=("Arial", self.font_md)).pack(side="left")
+        self.discount_entry = ctk.CTkEntry(discount_frame, width=60, height=28)
+        self.discount_entry.insert(0, "0")
+        self.discount_entry.pack(side="left", padx=10)
+        self.discount_entry.bind("<KeyRelease>", lambda e: self._update_summary())
+        
+        self.discount_label = ctk.CTkLabel(discount_frame, text="Amount: -₹0.00", font=("Arial", self.font_sm), text_color="gray")
+        self.discount_label.pack(side="left", padx=(5,0))
+        
+        gst_frame = ctk.CTkFrame(left, fg_color="transparent")
+        gst_frame.pack(anchor="w", fill="x", pady=2)
+        ctk.CTkLabel(gst_frame, text="GST %:", font=("Arial", self.font_md)).pack(side="left")
+        self.gst_entry = ctk.CTkEntry(gst_frame, width=60, height=28)
+        self.gst_entry.insert(0, "0")
+        self.gst_entry.pack(side="left", padx=10)
+        self.gst_entry.bind("<KeyRelease>", lambda e: self._update_summary())
+        
+        self.gst_label = ctk.CTkLabel(gst_frame, text="Amount: +₹0.00", font=("Arial", self.font_sm), text_color="gray")
+        self.gst_label.pack(side="left", padx=(5,0))
+        
+        self.total_label = ctk.CTkLabel(left, text="Total: ₹0.00", font=("Arial", self.font_xl, "bold"), text_color=config.COLOR_PRIMARY)
+        self.total_label.pack(anchor="w", pady=10)
+        
+        pay_frame = ctk.CTkFrame(right, fg_color="transparent")
+        pay_frame.pack(anchor="e", fill="x", pady=2)
+        ctk.CTkLabel(pay_frame, text="Amount Paid (₹):", font=("Arial", self.font_md)).pack(side="left")
+        self.amount_paid_entry = ctk.CTkEntry(pay_frame, width=100, height=28)
+        self.amount_paid_entry.pack(side="right")
+        self.amount_paid_entry.bind("<KeyRelease>", lambda e: self._update_summary())
+        
+        self.balance_label = ctk.CTkLabel(right, text="Balance Due: ₹0.00", font=("Arial", self.font_lg, "bold"), text_color=config.COLOR_DANGER)
+        self.balance_label.pack(anchor="e", pady=10)
+        
+        btn_frame = ctk.CTkFrame(right, fg_color="transparent")
+        btn_frame.pack(anchor="e", pady=10)
+        
+        self.whatsapp_btn = AnimatedButton(btn_frame, text="📱 WhatsApp", width=120, height=35, fg_color="#25D366", command=self._send_whatsapp)
+        self.whatsapp_btn.pack(side="left", padx=5)
+        
+        btn_text = "💾 Update Bill [F10]" if sale_id else "💳 Complete Sale [F10]"
+        btn_color = config.COLOR_WARNING if sale_id else config.COLOR_SUCCESS
+        self.checkout_btn = AnimatedButton(btn_frame, text=btn_text, width=150, height=35, fg_color=btn_color, command=self._complete_sale)
+        self.checkout_btn.pack(side="left", padx=5)
+        
+        # Bind F10 for Complete Sale globally while this frame exists
+        self.after(100, lambda: self.winfo_toplevel().bind("<F10>", lambda e: self._complete_sale()))
+        self.bind("<Destroy>", lambda e: self.winfo_toplevel().unbind("<F10>"))
+
+    def _create_labeled_input(self, parent, label, col):
+        ctk.CTkLabel(parent, text=label, font=("Arial", self.font_md)).grid(row=0, column=col, sticky="w", padx=5)
+        entry = ctk.CTkEntry(parent, height=28)
+        entry.grid(row=1, column=col, sticky="ew", padx=5, pady=2)
+        return entry
+
+    def _on_sku_enter(self, event):
+        sku = self.entry_vars['barcode_sku'].get().strip()
+        if not sku: return
+        
+        # Search by barcode or sku_code
+        res = self.db.execute_query("SELECT item_id, saree_type, brand, material, selling_price, quantity, barcode FROM inventory WHERE sku_code = ? OR barcode = ?", (sku, sku))
+        if res:
+            i_id, type_, brand, mat, sale, qty, barcode = res[0]
+            name = f"{type_} {brand or ''} {mat or ''}".strip()
+            self.current_item_id = i_id
+            self.current_avail_qty = qty
+            self.current_barcode = barcode
+            
+            self.entry_vars['item_name'].delete(0, "end"); self.entry_vars['item_name'].insert(0, name)
+            self.entry_vars['price'].delete(0, "end"); self.entry_vars['price'].insert(0, str(sale))
+            
+            self.entry_vars['avail_qty'].configure(state="normal")
+            self.entry_vars['avail_qty'].delete(0, "end"); self.entry_vars['avail_qty'].insert(0, str(qty))
+            self.entry_vars['avail_qty'].configure(state="readonly")
+            
+            self.entry_vars['qty'].focus_set()
+        else:
+            self.current_item_id = None
+            self.current_avail_qty = 9999
+            self.current_barcode = ""
+            self.entry_vars['item_name'].focus_set()
+
+    def _open_search_dialog(self):
+        d = ctk.CTkToplevel(self)
+        d.title("Search Items")
+        d.geometry("600x400")
+        d.transient(self.winfo_toplevel())
+        d.grab_set()
+        
+        search_frame = ctk.CTkFrame(d, fg_color="transparent")
+        search_frame.pack(fill="x", padx=10, pady=10)
+        
+        search_entry = ctk.CTkEntry(search_frame, placeholder_text="Search SKU, Name...", width=300)
+        search_entry.pack(side="left", padx=5)
+        
+        results_frame = ctk.CTkScrollableFrame(d, fg_color="transparent")
+        results_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        def search(e=None):
+            q = search_entry.get().strip()
+            for w in results_frame.winfo_children(): w.destroy()
+            
+            if not q: res = self.db.execute_query("SELECT item_id, sku_code, barcode, saree_type, brand, selling_price, quantity FROM inventory WHERE quantity > 0 LIMIT 20")
+            else: res = self.db.execute_query("SELECT item_id, sku_code, barcode, saree_type, brand, selling_price, quantity FROM inventory WHERE (sku_code LIKE ? OR barcode LIKE ? OR saree_type LIKE ?) AND quantity > 0 LIMIT 20", (f"%{q}%", f"%{q}%", f"%{q}%"))
+            
+            for item in res:
+                row = ctk.CTkFrame(results_frame)
+                row.pack(fill="x", pady=2)
+                name = f"{item[3]} {item[4] or ''}"
+                barcode_str = f"| B: {item[2]}" if item[2] else ""
+                ctk.CTkLabel(row, text=f"{item[1]} {barcode_str} - {name} (₹{item[5]}) [Qty: {item[6]}]").pack(side="left", padx=10)
+                ctk.CTkButton(row, text="Select", width=60, command=lambda i=item, n=name: select(i, n)).pack(side="right", padx=10, pady=5)
+                
+        def select(item, name):
+            self.entry_vars['barcode_sku'].delete(0, "end"); self.entry_vars['barcode_sku'].insert(0, item[1]) # Prefill with SKU
+            self.entry_vars['item_name'].delete(0, "end"); self.entry_vars['item_name'].insert(0, name)
+            self.entry_vars['price'].delete(0, "end"); self.entry_vars['price'].insert(0, str(item[5]))
+            
+            self.entry_vars['avail_qty'].configure(state="normal")
+            self.entry_vars['avail_qty'].delete(0, "end"); self.entry_vars['avail_qty'].insert(0, str(item[6]))
+            self.entry_vars['avail_qty'].configure(state="readonly")
+            
+            self.current_item_id = item[0]
+            self.current_avail_qty = item[5]
+            self.current_barcode = item[2]
+            self.entry_vars['qty'].focus_set()
+            d.destroy()
+            
+        search_entry.bind("<KeyRelease>", search)
+        search()
+
+    def _add_to_grid(self):
+        try:
+            sku = self.entry_vars['barcode_sku'].get().strip() or "CUSTOM"
+            name = self.entry_vars['item_name'].get().strip()
+            price = float(self.entry_vars['price'].get() or 0)
+            qty = int(self.entry_vars['qty'].get() or 0)
+            
+            if not name or qty <= 0:
+                messagebox.showerror("Error", "Name and Qty required")
+                return
+                
+            if self.current_item_id and qty > self.current_avail_qty:
+                messagebox.showwarning("Stock Limit", f"Only {self.current_avail_qty} available.")
+                return
+                
+            for cart_item in self.cart:
+                if cart_item['sku'] == sku and sku != "CUSTOM" and cart_item['name'] == name:
+                    if cart_item['quantity'] + qty > self.current_avail_qty:
+                        messagebox.showwarning("Stock Limit", "Cannot exceed available quantity")
+                        return
+                    cart_item['quantity'] += qty
+                    cart_item['total'] = cart_item['quantity'] * cart_item['price']
+                    break
+            else:
+                self.cart.append({
+                    'item_id': self.current_item_id,
+                    'sku': sku,
+                    'barcode': getattr(self, 'current_barcode', ''),
+                    'name': name,
+                    'price': price,
+                    'quantity': qty,
+                    'total': price * qty,
+                    'available_qty': self.current_avail_qty
+                })
+                
+            self._refresh_cart()
+            
+            self.entry_vars['barcode_sku'].delete(0, "end")
+            self.entry_vars['item_name'].delete(0, "end")
+            self.entry_vars['price'].delete(0, "end")
+            self.entry_vars['qty'].delete(0, "end")
+            self.entry_vars['avail_qty'].configure(state="normal")
+            self.entry_vars['avail_qty'].delete(0, "end")
+            self.entry_vars['avail_qty'].configure(state="readonly")
+            
+            self.current_item_id = None
+            self.current_avail_qty = 9999
+            self.current_barcode = ""
+            self.entry_vars['barcode_sku'].focus_set()
+            
+        except ValueError:
+            messagebox.showerror("Error", "Invalid numbers")
+
+    def _refresh_cart(self):
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+            
+        for idx, item in enumerate(self.cart):
+            vals = (str(idx+1), item['sku'], item.get('barcode', ''), item['name'], f"₹{item['price']:.2f}", str(item['quantity']), f"₹{item['total']:.2f}")
+            tags = ('even' if idx % 2 == 0 else 'odd',)
+            self.tree.insert("", "end", values=vals, tags=tags)
+            
+        self.tree.tag_configure('even', background="white")
+        self.tree.tag_configure('odd', background=config.COLOR_BG_HOVER)
+            
+        self._update_summary()
+
+    def _on_grid_double_click(self, event):
+        """Handle double click editing on grid for Name, Price or Qty"""
+        region = self.tree.identify("region", event.x, event.y)
+        if region != "cell": return
+        
+        col = self.tree.identify_column(event.x)
+        row_id = self.tree.identify_row(event.y)
+        if not row_id: return
+        
+        # We only allow editing Name (col 4), Price (col 5), and Qty (col 6) Since index is 0-based: 3,4,5
+        col_idx = int(col.replace('#', '')) - 1
+        if col_idx not in [3, 4, 5]: return
+        
+        x, y, w, h = self.tree.bbox(row_id, column=col)
+        
+        # Get current value
+        tree_idx = self.tree.index(row_id)
+        current_val = self.cart[tree_idx]
+        
+        if col_idx == 3: val_to_show = current_val['name']
+        elif col_idx == 4: val_to_show = str(current_val['price'])
+        elif col_idx == 5: val_to_show = str(current_val['quantity'])
+        
+        # Entry overlay
+        edit_entry = ttk.Entry(self.tree, font=("Arial", self.font_md))
+        edit_entry.insert(0, val_to_show)
+        edit_entry.place(x=x, y=y, width=w, height=h)
+        edit_entry.focus_set()
+        edit_entry.select_range(0, 'end')
+        
+        def save_edit(e, t_idx=tree_idx, c_idx=col_idx, entry_widget=edit_entry):
+            new_val = entry_widget.get().strip()
+            
+            try:
+                if c_idx == 3: # Name
+                    if new_val: self.cart[t_idx]['name'] = new_val
+                elif c_idx == 4: # Price
+                    self.cart[t_idx]['price'] = float(new_val)
+                    self.cart[t_idx]['total'] = self.cart[t_idx]['price'] * self.cart[t_idx]['quantity']
+                elif c_idx == 5: # Qty
+                    new_qty = int(new_val)
+                    if new_qty > 0:
+                        if new_qty <= self.cart[t_idx]['available_qty']:
+                            self.cart[t_idx]['quantity'] = new_qty
+                            self.cart[t_idx]['total'] = self.cart[t_idx]['price'] * self.cart[t_idx]['quantity']
+                        else:
+                            messagebox.showwarning("Stock Limit", f"Only {self.cart[t_idx]['available_qty']} available.")
+            except ValueError: pass
+            
+            entry_widget.destroy()
+            self._refresh_cart()
+            
+        edit_entry.bind("<Return>", save_edit)
+        edit_entry.bind("<FocusOut>", save_edit)
+        edit_entry.bind("<Escape>", lambda e: edit_entry.destroy())
+
+    def _delete_selected_item(self):
+        sel = self.tree.selection()
+        if not sel: return
+        
+        idx = self.tree.index(sel[0])
+        self.cart.pop(idx)
+        self._refresh_cart()
+    def _calculate_totals(self) -> dict:
+        """Calculate cart totals"""
+        subtotal = sum(item['total'] for item in self.cart)
+        try:
+            discount_percent = float(self.discount_entry.get() or 0)
+        except ValueError:
+            discount_percent = 0
+            
+        discount_amount = subtotal * (discount_percent / 100)
+        after_discount = subtotal - discount_amount
+        
+        try:
+            gst_percent = float(self.gst_entry.get() or 0)
+        except ValueError:
+            gst_percent = 0
+            
+        gst_amount = after_discount * (gst_percent / 100)
+        total = after_discount + gst_amount
+        
+        return {
+            "subtotal": subtotal,
+            "discount_percent": discount_percent,
+            "discount_amount": discount_amount,
+            "gst_percent": gst_percent,
+            "gst_amount": gst_amount,
+            "total": total
+        }
+
+    def _update_summary(self):
+        """Update cart summary"""
+        totals = self._calculate_totals()
+        
+        self.subtotal_label.configure(text=f"Subtotal: ₹{totals['subtotal']:,.2f}")
+        self.discount_label.configure(text=f"Discount ({totals['discount_percent']}%): ₹{totals['discount_amount']:,.2f}")
+        self.gst_label.configure(text=f"GST ({totals['gst_percent']}%): +₹{totals['gst_amount']:,.2f}")
+        
+        self.total_label.configure(text=f"Total: ₹{totals['total']:,.2f}")
+        
+        # Update Payment Fields
+        try:
+            paid_str = self.amount_paid_entry.get().strip()
+            if not paid_str:
+                paid_val = totals['total']
+            else:
+                paid_val = float(paid_str)
+        except ValueError:
+            paid_val = totals['total']
+        
+        balance = totals['total'] - paid_val
+        self.balance_label.configure(text=f"Balance Due: ₹{max(0, balance):,.2f}")
+        
+        if balance > 0:
+             self.balance_label.configure(text_color=config.COLOR_DANGER)
+        else:
+             self.balance_label.configure(text_color=config.COLOR_SUCCESS)
+    
+    def _print_invoice(self, filepath: str):
+        """Open PDF for printing instead of silent native print to avoid crashes"""
+        try:
+            opened = self._open_pdf(filepath)
+            if opened:
+                messagebox.showinfo("Print Options", "The invoice has been opened in your default PDF viewer.\nPlease proceed to print from there.")
+            else:
+                messagebox.showerror("Error", "Could not open the invoice automatically to print.")
+        except Exception as e:
+            messagebox.showerror("Print Error", f"Failed to print:\n{str(e)}\n\nPlease manually open the PDF.")
+
+    def _open_pdf(self, filepath: str) -> bool:
+        """
+        Open a PDF file with multiple fallback methods.
+        Returns True if successful, False otherwise.
+        """
+        try:
+            # Method 1: os.startfile (Windows primary method)
+            os.startfile(filepath)
+            return True
+        except Exception as e1:
+            try:
+                 # Method 2: subprocess with default PDF viewer
+                 import subprocess
+                 subprocess.Popen(['start', '', filepath], shell=True)
+                 return True
+            except Exception as e2:
+                 try:
+                      # Method 3: webbrowser fallback
+                      import webbrowser
+                      webbrowser.open(filepath)
+                      return True
+                 except: return False
+    def _generate_detailed_whatsapp_msg(self, totals, bill_number):
+        """Generate detailed WhatsApp receipt"""
+        shop_name = "Shree Ganesha Silk"
+        date_str = datetime.now().strftime("%d-%m-%Y %I:%M %p")
+        
+        msg = f"*{shop_name}*\n"
+        msg += f"🧾 Bill No: {bill_number}\n"
+        msg += f"📅 Date: {date_str}\n"
+        msg += "--------------------------------\n"
+        msg += "*Items Details:*\n"
+        
+        for idx, item in enumerate(self.cart):
+            sr = idx + 1
+            msg += f"{sr}. {item['name']}\n"
+            msg += f"   Qty: {item['quantity']} × ₹{item['price']:,.2f} = *₹{item['total']:,.2f}*\n"
+            
+        msg += "--------------------------------\n"
+        msg += f"Subtotal: ₹{totals['subtotal']:,.2f}\n"
+        if totals['discount_amount'] > 0:
+            msg += f"Discount: -₹{totals['discount_amount']:,.2f}\n"
+        if totals['gst_amount'] > 0:
+            msg += f"GST: +₹{totals['gst_amount']:,.2f}\n"
+        
+        msg += f"*Total Amount: ₹{totals['total']:,.2f}*\n"
+        
+        # Payment History from DB if editing
+        if hasattr(self, 'editing_sale_id') and self.editing_sale_id:
+            try:
+                history = self.db.execute_query(
+                    "SELECT amount_paid, payment_date FROM payment_history WHERE sale_id = ? ORDER BY payment_date ASC",
+                    (self.editing_sale_id,)
+                )
+                if history:
+                    msg += "\n*Payment Ledger:*\n"
+                    for h in history:
+                        p_date = str(h[1])[:10] if h[1] else ""
+                        msg += f"• {p_date}: ₹{h[0]:,.2f}\n"
+            except Exception: pass
+        
+        # Add payment details if available from entry
+        try:
+            paid_str = self.amount_paid_entry.get().strip()
+            total_paid_now = float(paid_str) if paid_str else totals['total']
+            balance = max(0, totals['total'] - total_paid_now)
+            msg += f"\nTotal Paid: ₹{total_paid_now:,.2f}\n"
+            if balance > 0:
+                msg += f"Balance Due: ₹{balance:,.2f}\n"
+        except: pass
+        
+        msg += "\nThank you for shopping with us! 🙏"
+        return msg
+
+    def _send_whatsapp(self):
+        """Send bill details via WhatsApp"""
+        if not self.cart:
+            messagebox.showwarning("Empty Cart", "Add items to cart first.")
+            return
+            
+        phone = self.customer_phone_entry.get().strip()
+        if not phone:
+            messagebox.showwarning("Missing Phone", "Please enter customer phone number.")
+            return
+            
+        totals = self._calculate_totals()
+        
+        # Use simple bill number placeholder if not saved yet, or generate one preview
+        # Better to ask user: "Save and Send?" or just send preview.
+        # User usually expects this AFTER sale. But if button is clicked before, we generate preview.
+        bill_num_preview = "DRAFT"
+        
+        bill_text = self._generate_detailed_whatsapp_msg(totals, bill_num_preview)
+        
+        # Encode for URL
+        import urllib.parse
+        encoded_text = urllib.parse.quote(bill_text)
+        
+        # Open WhatsApp Web
+        import webbrowser
+        webbrowser.open(f"https://web.whatsapp.com/send?phone=+91{phone}&text={encoded_text}")
+
+    def _load_sale_for_editing(self):
+        """Load sale details into UI"""
+        try:
+            # Fetch sale details (including payment info which we just added columns for)
+            # Note: The query in get_bill_details might need update or we query manually to get paid/due
+            # Accessing DB directly here for clarity
+            sale_data = self.db.execute_query(
+                "SELECT customer_name, customer_phone, discount_percent, amount_paid, gst_amount, final_amount, total_amount FROM sales WHERE sale_id = ?",
+                (self.editing_sale_id,)
+            )
+            
+            if not sale_data:
+                messagebox.showerror("Error", "Bill not found")
+                return
+                
+            name, phone, disc, paid, gst_amt, final_amt, tot_amt = sale_data[0]
+            
+            # Since we calculate GST as a percent of (tot_amt - discount), let's backcheck the percent if possible
+            # or simply load the discount frame and assume user re-enters gst. But let's try to reverse-engineer %:
+            sub = tot_amt
+            sub_after_disc = sub - (sub * (disc / 100))
+            gst_perc = (gst_amt / sub_after_disc * 100) if sub_after_disc > 0 else 0
+            
+            # Set fields
+            if name: self.customer_name_entry.insert(0, name)
+            if phone: self.customer_phone_entry.insert(0, phone)
+            self.discount_entry.insert(0, str(disc))
+            
+            # Add gst back if exists
+            if hasattr(self, 'gst_entry'):
+                self.gst_entry.delete(0, "end")
+                self.gst_entry.insert(0, f"{gst_perc:g}")
+            
+            self.amount_paid_entry.insert(0, str(paid))
+            
+            # Fetch items
+            items = self.db.execute_query(
+                """SELECT si.item_id, si.sku_code, si.item_name, si.quantity, si.unit_price, i.quantity
+                   FROM sale_items si
+                   LEFT JOIN inventory i ON si.item_id = i.item_id
+                   WHERE si.sale_id = ?""",
+                (self.editing_sale_id,)
+            )
+            
+            for item in items:
+                self.cart.append({
+                    'item_id': item[0],
+                    'sku': item[1],
+                    'name': item[2],
+                    'price': item[4],
+                    'quantity': item[3],
+                    'total': item[3] * item[4],
+                    'available_qty': (item[5] or 0) + item[3] # Available = Current Stock + Qty in Cart (since we holding it)
+                })
+            
+            self._refresh_cart()
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load bill: {e}")
+
+    def _complete_sale(self):
+        """Complete sale and generate invoice with robust error handling"""
+        if not self.cart:
+            messagebox.showerror("Error", "Cart is empty")
+            return
+            
+        phone = self.customer_phone_entry.get().strip()
+        if phone and (len(phone) != 10 or not phone.isdigit()):
+            messagebox.showerror("Validation Error", "If provided, please enter a valid 10-digit Customer Phone Number.")
+            return
+        
+        try:
+            # Calculate totals
+            totals = self._calculate_totals()
+            
+            if self.editing_sale_id:
+                # Update existing sale
+                sale_id = self.editing_sale_id
+                
+                # 1. Revert Stock for ORIGINAL items
+                old_items = self.db.execute_query("SELECT item_id, quantity FROM sale_items WHERE sale_id = ?", (sale_id,))
+                for item_id, qty in old_items:
+                    # Check if custom (using placeholder ID? Need to check SKU or ID)
+                    # Actually get_or_create_custom_item returns an ID. 
+                    # If SKU was 'CUSTOM', we don't track stock.
+                    # We should check SKU from sale_items to be sure.
+                    # Let's simple check:
+                    self.db.execute_query("UPDATE inventory SET quantity = quantity + ? WHERE item_id = ? AND sku_code != 'CUSTOM'", (qty, item_id))
+
+                # 2. Update Sale Record
+                payment_status = "Paid"
+                try:
+                    paid_str = self.amount_paid_entry.get().strip()
+                    amount_paid = float(paid_str) if paid_str else totals['total']
+                except ValueError:
+                    amount_paid = totals['total']
+                
+                balance = max(0, totals['total'] - amount_paid)
+                if balance > 0: payment_status = "Partial" if amount_paid > 0 else "Pending"
+
+                # Get old payment to log difference
+                old_paid_res = self.db.execute_query("SELECT amount_paid FROM sales WHERE sale_id=?", (sale_id,))
+                old_paid = old_paid_res[0][0] if old_paid_res else 0
+
+                self.db.execute_query(
+                    """UPDATE sales SET customer_name=?, customer_phone=?, total_amount=?, 
+                       discount_percent=?, discount_amount=?, gst_amount=?, final_amount=?, 
+                       amount_paid=?, balance_due=?, payment_status=?
+                       WHERE sale_id=?""",
+                    (self.customer_name_entry.get() or None, self.customer_phone_entry.get() or None,
+                     totals['subtotal'], totals['discount_percent'], totals['discount_amount'],
+                     totals['gst_amount'], totals['total'], amount_paid, balance, payment_status, sale_id)
+                )
+                
+                # Log Payment Change if it increased
+                diff = amount_paid - old_paid
+                if diff > 0:
+                    self.db.execute_insert(
+                        "INSERT INTO payment_history (sale_id, amount_paid, payment_method, activity_note) VALUES (?, ?, ?, ?)",
+                        (sale_id, diff, "Cash", "Exchange / Bill Updated")
+                    )
+                
+                # 3. Delete old items
+                self.db.execute_query("DELETE FROM sale_items WHERE sale_id = ?", (sale_id,))
+                
+                # 4. Insert new items (Standard logic below will handle stock deduction)
+                # We reuse the logic below but need to skip the INSERT sales part.
+                
+                bill_number = self.db.execute_query("SELECT bill_number FROM sales WHERE sale_id=?", (sale_id,))[0][0]
+                
+            else:
+                # NEW SALE LOGIC
+                # Generate Sequential Bill Number (ESB-1, ESB-2...)
+                # Get max sale_id
+                last_id_res = self.db.execute_query("SELECT MAX(sale_id) FROM sales")
+                next_id = 1
+                if last_id_res and last_id_res[0][0]:
+                    next_id = last_id_res[0][0] + 1
+                
+                bill_number = f"ESB-{next_id}"
+                
+                # Insert sale
+                sale_id = self.db.execute_insert(
+                    """INSERT INTO sales (bill_number, customer_name, customer_phone,
+                       total_amount, discount_percent, discount_amount, gst_amount,
+                       final_amount, payment_method, created_by)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (bill_number, self.customer_name_entry.get() or None,
+                     self.customer_phone_entry.get() or None, totals['subtotal'], totals['discount_percent'],
+                     totals['discount_amount'], totals['gst_amount'], totals['total'], "Cash",
+                     self.current_user['username'])
+                )
+                
+                # Payment Details Update for New Sale
+                try:
+                    paid_str = self.amount_paid_entry.get().strip()
+                    amount_paid = float(paid_str) if paid_str else totals['total']
+                except ValueError:
+                    amount_paid = totals['total'] 
+                
+                balance_due = max(0, totals['total'] - amount_paid)
+                payment_status = "Paid"
+                if balance_due > 0:
+                    payment_status = "Partial" if amount_paid > 0 else "Pending"
+                
+                self.db.execute_query(
+                    "UPDATE sales SET amount_paid = ?, balance_due = ?, payment_status = ? WHERE sale_id = ?",
+                    (amount_paid, balance_due, payment_status, sale_id)
+                )
+                
+                # Insert initial payment record
+                if amount_paid > 0:
+                    self.db.execute_insert(
+                        "INSERT INTO payment_history (sale_id, amount_paid, payment_method, activity_note) VALUES (?, ?, ?, ?)",
+                        (sale_id, amount_paid, "Cash", "Initial Payment")
+                    )
+            
+            # Insert sale items and update inventory (Common for both New and Edit)
+            for item in self.cart:
+                # Handle Custom Items (Get placeholder ID)
+                item_id_to_store = item['item_id']
+                if item_id_to_store is None:
+                    item_id_to_store = self.db.get_or_create_custom_item()
+
+                self.db.execute_insert(
+                    """INSERT INTO sale_items (sale_id, item_id, sku_code, item_name,
+                       quantity, unit_price, total_price)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (sale_id, item_id_to_store, item['sku'], item['name'],
+                     item['quantity'], item['price'], item['total'])
+                )
+                
+                # Update inventory ONLY for actual stock items (not custom placeholder)
+                if item['item_id'] and item['sku'] != 'CUSTOM':
+                    self.db.execute_query(
+                        "UPDATE inventory SET quantity = quantity - ? WHERE item_id = ?",
+                        (item['quantity'], item['item_id'])
+                    )
+            
+            # Generate invoice PDF
+            try:
+                invoice_path = self.invoice_gen.generate_invoice(sale_id)
+                invoice_generated = True
+            except Exception as pdf_error:
+                invoice_generated = False
+                invoice_path = None
+                error_msg = str(pdf_error)
+            
+            # Clear cart first
+            self.cart.clear()
+            self._refresh_cart()
+            self.customer_name_entry.delete(0, 'end')
+            self.customer_phone_entry.delete(0, 'end')
+            self.discount_entry.delete(0, 'end')
+            if hasattr(self, 'gst_entry'):
+                self.gst_entry.delete(0, 'end')
+                self.gst_entry.insert(0, "0")
+            self.amount_paid_entry.delete(0, 'end')
+            
+            # Reset the item entry row
+            if hasattr(self, 'entry_vars'):
+                self.entry_vars['barcode_sku'].delete(0, "end")
+                self.entry_vars['item_name'].delete(0, "end")
+                self.entry_vars['price'].delete(0, "end")
+                self.entry_vars['qty'].delete(0, "end")
+                self.entry_vars['avail_qty'].configure(state="normal")
+                self.entry_vars['avail_qty'].delete(0, "end")
+                self.entry_vars['avail_qty'].configure(state="readonly")
+                self.current_item_id = None
+                self.current_avail_qty = 9999
+            
+            # Update last bill amount
+            try:
+                res = self.db.execute_query("SELECT final_amount FROM sales ORDER BY sale_id DESC LIMIT 1")
+                last_amt = res[0][0] if res else 0.0
+                if hasattr(self, 'last_bill_amount_lbl'):
+                    self.last_bill_amount_lbl.configure(text=f"₹{last_amt:,.2f}")
+            except Exception:
+                pass
+            
+            # Show success message and handle PDF
+            action_text = "Updated" if self.editing_sale_id else "Completed"
+            if invoice_generated:
+                # Try to open the PDF
+                pdf_opened = self._open_pdf(invoice_path)
+                
+                if pdf_opened:
+                    success_msg = (
+                        f"✅ Sale {action_text} Successfully!\n\n"
+                        f"Bill Number: {bill_number}\n"
+                        f"Total Amount: ₹{totals['total']:,.2f}\n\n"
+                        f"Invoice PDF has been generated and opened.\n"
+                        f"Location: {invoice_path}"
+                    )
+                else:
+                    success_msg = (
+                        f"✅ Sale {action_text} Successfully!\n\n"
+                        f"Bill Number: {bill_number}\n"
+                        f"Total Amount: ₹{totals['total']:,.2f}\n\n"
+                        f"⚠️ Could not auto-open PDF.\n"
+                        f"Please open manually from:\n{invoice_path}\n\n"
+                        f"💡 Tip: Right-click the file and select 'Open with' → PDF viewer"
+                    )
+                
+                messagebox.showinfo("Sale Completed", success_msg)
+                
+                # Ask if user wants to print
+                if messagebox.askyesno("Print Invoice", "Would you like to print the invoice?"):
+                     self._print_invoice(invoice_path)
+            else:
+                # Sale succeeded but PDF failed
+                error_msg = (
+                    f"✅ Sale {action_text} Successfully!\n\n"
+                    f"Bill Number: {bill_number}\n"
+                    f"Total Amount: ₹{totals['total']:,.2f}\n\n"
+                    f"⚠️ Warning: PDF invoice generation failed.\n"
+                    f"Error: {error_msg}\n\n"
+                    f"Sale data is saved in the database.\n"
+                    f"You can regenerate the invoice later from Reports."
+                )
+                messagebox.showwarning("Sale Completed (PDF Failed)", error_msg)
+            
+            # Reset editing state and clear UI
+            self.editing_sale_id = None
+            self.checkout_btn.configure(text="💳 Complete Sale", fg_color=config.COLOR_SUCCESS)
+            
+            # Clear UI for next bill
+            self.cart.clear()
+            self._refresh_cart()
+            if hasattr(self, 'customer_name_entry'):
+                self.customer_name_entry.delete(0, 'end')
+            if hasattr(self, 'customer_phone_entry'):
+                self.customer_phone_entry.delete(0, 'end')
+            if hasattr(self, 'discount_entry'):
+                self.discount_entry.delete(0, 'end')
+                self.discount_entry.insert(0, '0')
+            if hasattr(self, 'gst_entry'):
+                self.gst_entry.delete(0, 'end')
+                self.gst_entry.insert(0, '0')
+            if hasattr(self, 'amount_paid_entry'):
+                self.amount_paid_entry.delete(0, 'end')
+            
+            # Reset Bill Number UI to auto-generated
+            if hasattr(self, 'bill_no_entry'):
+                self.bill_no_entry.configure(state="normal")
+                self.bill_no_entry.delete(0, 'end')
+                self.bill_no_entry.insert(0, "Auto-Generated")
+                self.bill_no_entry.configure(state="readonly")
+                
+            self.header.configure(title="New Bill / Invoice")
+            self._update_summary()
+            # Reset header title? Needs reload or simple label update if I saved it
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to complete sale:\n\n{str(e)}\n\nPlease contact support if this persists.")
