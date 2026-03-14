@@ -701,7 +701,7 @@ copy [source] [dest]               # Copy file
 
 **🎉 Congratulations on completing the installation!**
 
-You now have a professional Shree Ganesha Silkmanagement system ready to use. Take time to explore all features, test thoroughly, and customize to your needs.
+You now have a professional Shree Ganesha Silk system ready to use. Take time to explore all features, test thoroughly, and customize to your needs.
 
 For detailed feature usage, please refer to the **USER_MANUAL.md**.
 

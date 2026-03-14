@@ -23,8 +23,24 @@ class ReportsModule(ctk.CTkFrame):
         
         self.db = db_manager
         
+        # Font sizes
+        self.font_sm = config.FONT_SIZE_SMALL
+        self.font_md = config.FONT_SIZE_BODY
+        self.font_lg = config.FONT_SIZE_HEADING_3
+        self.font_xl = config.FONT_SIZE_HEADING_2
+        
         # Header
-        PageHeader(self, title="📈 Reports & Analytics").pack(fill="x", pady=(0, config.SPACING_LG))
+        header_frame = ctk.CTkFrame(self, fg_color="transparent")
+        header_frame.pack(fill="x", pady=(0, config.SPACING_LG))
+        PageHeader(header_frame, title="📈 Reports & Analytics").pack(side="left")
+        
+        ctk.CTkButton(
+            header_frame,
+            text="+ Add Shop Expense",
+            fg_color=config.COLOR_DANGER,
+            height=30,
+            command=self._add_expense_dialog
+        ).pack(side="right", padx=config.SPACING_MD)
         
         # Period selector
         selector_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -149,6 +165,77 @@ class ReportsModule(ctk.CTkFrame):
         except Exception as e:
             messagebox.showerror("Export Error", f"Failed to export data: {str(e)}")
 
+    def _add_expense_dialog(self):
+        """Dialog to log shop expenses"""
+        d = ctk.CTkToplevel(self)
+        d.title("Add Shop Expense")
+        d.geometry("450x450")
+        d.transient(self.winfo_toplevel())
+        d.grab_set()
+        
+        # Center the dialog
+        d.update_idletasks()
+        x = (d.winfo_screenwidth() - d.winfo_width()) // 2
+        y = (d.winfo_screenheight() - d.winfo_height()) // 2
+        d.geometry(f"+{x}+{y}")
+        
+        ctk.CTkLabel(d, text="Log New Expense", font=ctk.CTkFont(size=self.font_xl, weight="bold")).pack(pady=(20, 10))
+        
+        form_frame = ctk.CTkFrame(d, fg_color="transparent")
+        form_frame.pack(fill="x", padx=30, pady=10)
+        
+        # Amount
+        ctk.CTkLabel(form_frame, text="Amount (₹)*", anchor="w").pack(fill="x")
+        amt_entry = ctk.CTkEntry(form_frame)
+        amt_entry.pack(fill="x", pady=(0, 15))
+        amt_entry.focus_set()
+        
+        # Category
+        ctk.CTkLabel(form_frame, text="Category*", anchor="w").pack(fill="x")
+        cat_combo = ctk.CTkComboBox(form_frame, values=["Salary", "Rent", "Electricity", "Tea/Snacks", "Transport", "Maintenance", "Misc"])
+        cat_combo.pack(fill="x", pady=(0, 15))
+        
+        # Description
+        ctk.CTkLabel(form_frame, text="Description", anchor="w").pack(fill="x")
+        desc_entry = ctk.CTkEntry(form_frame)
+        desc_entry.pack(fill="x", pady=(0, 15))
+        
+        # Date
+        ctk.CTkLabel(form_frame, text="Date", anchor="w").pack(fill="x", pady=(0, 5))
+        date_entry = DateEntry(form_frame, width=12, background=config.COLOR_PRIMARY,
+                               foreground='white', borderwidth=2, date_pattern='yyyy-mm-dd')
+        date_entry.pack(anchor="w")
+        
+        def save_expense():
+            try:
+                amt = float(amt_entry.get())
+                cat = cat_combo.get()
+                desc = desc_entry.get().strip()
+                date_val = date_entry.get()
+                
+                if amt <= 0 or not cat:
+                    raise ValueError("Amount and Category required")
+                    
+                self.db.execute_query(
+                    "INSERT INTO expenses (amount, category, description, expense_date) VALUES (?, ?, ?, ?)",
+                    (amt, cat, desc, date_val)
+                )
+                
+                messagebox.showinfo("Success", "Expense logged successfully", parent=d)
+                d.destroy()
+                self._load_reports() # Refresh charts/metrics
+            except ValueError as e:
+                messagebox.showerror("Validation Error", str(e), parent=d)
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not save: {e}", parent=d)
+                
+        # Buttons
+        btn_frame = ctk.CTkFrame(d, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=30, pady=20)
+        
+        ctk.CTkButton(btn_frame, text="Cancel", fg_color="transparent", border_width=1, text_color="gray", command=d.destroy).pack(side="left", expand=True, padx=5)
+        ctk.CTkButton(btn_frame, text="Save Expense", fg_color=config.COLOR_DANGER, command=save_expense).pack(side="right", expand=True, padx=5)
+
     def _export_sales(self):
         """Export sales history"""
         headers = ["Bill No", "Date", "Customer Name", "Phone", "Items", "Amount", "Method", "Created By"]
@@ -242,9 +329,54 @@ class ReportsModule(ctk.CTkFrame):
             metrics_frame, 1, "Transactions", 
             str(sales_data[0]), config.COLOR_SUCCESS
         )
+        # Average Sale label mapped to index 2
         self._create_metric_card(
             metrics_frame, 2, "Average Sale", 
             f"₹{sales_data[2]:,.2f}", config.COLOR_INFO
+        )
+        
+        # Shop Expenses
+        try:
+            exp_data = self.db.execute_query(
+                "SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE DATE(expense_date) BETWEEN ? AND ?",
+                (start_date, end_date)
+            )
+            total_expenses = exp_data[0][0] if exp_data else 0
+        except Exception:
+            total_expenses = 0
+            
+        self._create_metric_card(
+            metrics_frame, 3, "Shop Expenses", 
+            f"₹{total_expenses:,.2f}", config.COLOR_DANGER
+        )
+        
+        # Cost of Goods Sold (COGS)
+        try:
+            cogs_data = self.db.execute_query(
+                """SELECT COALESCE(SUM(i.purchase_price * si.quantity), 0)
+                   FROM sale_items si
+                   JOIN inventory i ON si.item_id = i.item_id
+                   JOIN sales s ON si.sale_id = s.sale_id
+                   WHERE DATE(s.sale_date) BETWEEN ? AND ?""",
+                (start_date, end_date)
+            )
+            cogs = cogs_data[0][0] if cogs_data else 0
+        except Exception:
+            cogs = 0
+
+        # Net Profit (Sales - Expenses - Cost of Goods Sold)
+        net_profit = sales_data[1] - total_expenses - cogs
+        profit_color = config.COLOR_SUCCESS if net_profit >= 0 else config.COLOR_DANGER
+        
+        # Create a second row for more metrics
+        metrics_frame_row2 = ctk.CTkFrame(self.reports_frame, fg_color="transparent")
+        metrics_frame_row2.pack(fill="x", pady=(0, config.SPACING_LG))
+        for i in range(4):
+            metrics_frame_row2.grid_columnconfigure(i, weight=1)
+            
+        self._create_metric_card(
+            metrics_frame_row2, 0, "Net Profit", 
+            f"₹{net_profit:,.2f}", profit_color
         )
         
         # Total items sold
@@ -257,7 +389,7 @@ class ReportsModule(ctk.CTkFrame):
         )[0][0]
         
         self._create_metric_card(
-            metrics_frame, 3, "Items Sold", 
+            metrics_frame_row2, 1, "Items Sold", 
             str(total_items), config.COLOR_WARNING
         )
         
@@ -284,15 +416,19 @@ class ReportsModule(ctk.CTkFrame):
         )
         earnings_chart.pack(fill="both", expand=True, pady=(0, config.SPACING_LG))
         
+        # Bottom Section Row (Top Items + Recent Expenses)
+        bottom_row = ctk.CTkFrame(self.reports_frame, fg_color="transparent")
+        bottom_row.pack(fill="both", expand=True, pady=(0, config.SPACING_LG))
+        
         # Top selling items
         top_items_frame = ctk.CTkFrame(
-            self.reports_frame,
+            bottom_row,
             fg_color=config.COLOR_BG_CARD,
             corner_radius=config.RADIUS_LG,
             border_width=1,
             border_color=config.COLOR_BORDER
         )
-        top_items_frame.pack(fill="both", expand=True)
+        top_items_frame.pack(side="left", fill="both", expand=True, padx=(0, config.SPACING_SM))
         
         ctk.CTkLabel(
             top_items_frame,
@@ -347,7 +483,76 @@ class ReportsModule(ctk.CTkFrame):
                 font=ctk.CTkFont(size=config.FONT_SIZE_BODY),
                 text_color=config.COLOR_TEXT_SECONDARY
             ).pack(pady=config.SPACING_XL)
-    
+            
+        # Recent Expenses
+        expenses_frame = ctk.CTkFrame(
+            bottom_row,
+            fg_color=config.COLOR_BG_CARD,
+            corner_radius=config.RADIUS_LG,
+            border_width=1,
+            border_color=config.COLOR_BORDER
+        )
+        expenses_frame.pack(side="left", fill="both", expand=True, padx=(config.SPACING_SM, 0))
+        
+        ctk.CTkLabel(
+            expenses_frame,
+            text="Recent Expenses",
+            font=ctk.CTkFont(size=config.FONT_SIZE_HEADING_3, weight="bold"),
+            text_color=config.COLOR_TEXT_PRIMARY
+        ).pack(pady=config.SPACING_LG, padx=config.SPACING_LG, anchor="w")
+        
+        # Get recent expenses
+        recent_expenses = self.db.execute_query(
+            """SELECT expense_date, category, description, amount
+               FROM expenses
+               WHERE DATE(expense_date) BETWEEN ? AND ?
+               ORDER BY expense_date DESC
+               LIMIT 20""",
+            (start_date, end_date)
+        )
+        
+        exp_scroll = ctk.CTkScrollableFrame(
+            expenses_frame,
+            fg_color="transparent",
+            scrollbar_button_color=config.COLOR_PRIMARY
+        )
+        exp_scroll.pack(fill="both", expand=True, padx=config.SPACING_LG, pady=(0, config.SPACING_LG))
+        
+        if recent_expenses:
+            for idx, (date, cat, desc, amt) in enumerate(recent_expenses):
+                bg = config.COLOR_BG_HOVER if idx % 2 == 0 else "transparent"
+                row_f = ctk.CTkFrame(exp_scroll, fg_color=bg)
+                row_f.pack(fill="x", pady=1)
+                
+                ctk.CTkLabel(
+                    row_f,
+                    text=f"{date} - {cat}",
+                    font=ctk.CTkFont(size=config.FONT_SIZE_SMALL, weight="bold"),
+                    text_color=config.COLOR_TEXT_PRIMARY
+                ).pack(side="left", padx=config.SPACING_MD, pady=config.SPACING_SM)
+                
+                ctk.CTkLabel(
+                    row_f,
+                    text=f"₹{amt:,.2f}",
+                    font=ctk.CTkFont(size=config.FONT_SIZE_SMALL),
+                    text_color=config.COLOR_DANGER
+                ).pack(side="right", padx=config.SPACING_MD, pady=config.SPACING_SM)
+                
+                if desc:
+                    ctk.CTkLabel(
+                        row_f,
+                        text=desc,
+                        font=ctk.CTkFont(size=10),
+                        text_color=config.COLOR_TEXT_SECONDARY
+                    ).pack(side="left", padx=0, pady=config.SPACING_SM)
+        else:
+            ctk.CTkLabel(
+                exp_scroll,
+                text="No expenses recorded",
+                font=ctk.CTkFont(size=config.FONT_SIZE_BODY),
+                text_color=config.COLOR_TEXT_SECONDARY
+            ).pack(pady=config.SPACING_XL)
+            
     def _create_metric_card(self, parent, column, title, value, color):
         """Create a metric card"""
         card = ctk.CTkFrame(

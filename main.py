@@ -1,6 +1,6 @@
 """
 Main Application Entry Point
-Shree Ganesha SilkManagement System with Premium Light Theme
+Shree Ganesha Silk System with Premium Light Theme
 """
 
 # ==========================================================
@@ -25,6 +25,7 @@ from tkinter import messagebox
 import config
 from database import DatabaseManager
 from invoice_generator import InvoiceGenerator
+from purchase_invoice_generator import PurchaseInvoiceGenerator
 from auth import LoginScreen
 from dashboard import Dashboard
 from billing import BillingModule
@@ -56,6 +57,7 @@ class BoutiqueManagementApp(ctk.CTk):
         # Initialize database
         self.db = DatabaseManager(config.DB_NAME)
         self.invoice_generator = InvoiceGenerator(self.db)
+        self.purchase_invoice_generator = PurchaseInvoiceGenerator(self.db)
         
         # Current user
         self.current_user = None
@@ -180,17 +182,22 @@ class BoutiqueManagementApp(ctk.CTk):
             PurchaseManagementModule(
                 self.dashboard.content_frame,
                 db_manager=self.db,
-                invoice_generator=self.invoice_generator
+                invoice_generator=self.invoice_generator,
+                purchase_invoice_generator=self.purchase_invoice_generator,
+                on_edit_purchase=lambda pid: self.dashboard._navigate("new_stock", purchase_id=pid)
             ).pack(fill="both", expand=True)
         elif screen == "stock":
             StockManagementModule(
                 self.dashboard.content_frame,
-                db_manager=self.db
+                db_manager=self.db,
+                on_add_stock=lambda item_id: self.dashboard._navigate("new_stock", prefill_item_id=item_id)
             ).pack(fill="both", expand=True)
         elif screen == "new_stock":
             NewStockModule(
                 self.dashboard.content_frame,
-                db_manager=self.db
+                db_manager=self.db,
+                purchase_invoice_generator=self.purchase_invoice_generator,
+                **kwargs
             ).pack(fill="both", expand=True)
         elif screen == "search":
             GlobalSearchModule(

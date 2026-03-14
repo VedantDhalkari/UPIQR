@@ -13,10 +13,11 @@ from ui_components import AnimatedButton, SearchBar, PageHeader
 class StockManagementModule(ctk.CTkFrame):
     """Stock management interface"""
     
-    def __init__(self, parent, db_manager, **kwargs):
+    def __init__(self, parent, db_manager, on_add_stock=None, **kwargs):
         super().__init__(parent, fg_color="transparent", **kwargs)
         
         self.db = db_manager
+        self.on_add_stock = on_add_stock
         
         # Header
         PageHeader(self, title="📦 Stock Management").pack(fill="x", pady=(0, config.SPACING_LG))
@@ -165,7 +166,7 @@ class StockManagementModule(ctk.CTkFrame):
         
         dialog = ctk.CTkToplevel(self)
         dialog.title(f"Stock History - {item[1]}")
-        dialog.geometry("800x600")
+        dialog.geometry("900x600")
         dialog.transient(self.winfo_toplevel())
         dialog.grab_set()
         
@@ -184,105 +185,172 @@ class StockManagementModule(ctk.CTkFrame):
             header,
             text="+ Add Stock Entry",
             fg_color=config.COLOR_SUCCESS,
-            command=lambda: self._add_stock_entry_dialog(dialog, item_id)
+            command=lambda: self._add_stock_entry_dialog(dialog, item_id, load_history)
         ).pack(side="right")
         
-        # History Table
-        history_frame = ctk.CTkScrollableFrame(dialog, fg_color=config.COLOR_BG_CARD)
-        history_frame.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+        # History Table Container
+        tree_container = ctk.CTkFrame(dialog, fg_color="white", border_width=1, border_color="#CCC", corner_radius=0)
+        tree_container.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+
+        from tkinter import ttk
+        style = ttk.Style()
+        style.theme_use("default")
         
+        columns = ("entry_id", "date", "qty", "price", "supplier", "note")
+        self.history_tree = ttk.Treeview(tree_container, columns=columns, show="headings", height=15)
+        
+        vsb = ttk.Scrollbar(tree_container, orient="vertical", command=self.history_tree.yview)
+        self.history_tree.configure(yscrollcommand=vsb.set)
+        self.history_tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        
+        headings = [
+            ("date", "Date", 150),
+            ("qty", "Qty Added", 100),
+            ("price", "Price", 100),
+            ("supplier", "Supplier", 150),
+            ("note", "Note", 200)
+        ]
+        
+        self.history_tree.heading("entry_id", text="ID")
+        self.history_tree.column("entry_id", width=0, stretch=False)
+        
+        for col, text, width in headings:
+            self.history_tree.heading(col, text=text)
+            self.history_tree.column(col, width=width, anchor="center" if col in ("qty", "price") else "w")
+
         def load_history():
-            for widget in history_frame.winfo_children():
-                widget.destroy()
+            for row in self.history_tree.get_children():
+                self.history_tree.delete(row)
                 
             entries = self.db.execute_query(
-                "SELECT * FROM stock_entries WHERE item_id = ? ORDER BY date_added DESC",
+                "SELECT entry_id, date_added, quantity_added, purchase_price, supplier_name, admin_note FROM stock_entries WHERE item_id = ? ORDER BY date_added DESC",
                 (item_id,)
             )
-            
-            # Headers
-            headers = ["Date", "Qty Added", "Price", "Supplier", "Note", "Action"]
-            h_frame = ctk.CTkFrame(history_frame, fg_color=config.COLOR_PRIMARY, height=40)
-            h_frame.pack(fill="x", pady=(0, 5))
-            
-            for i, h in enumerate(headers):
-                h_frame.grid_columnconfigure(i, weight=1)
-                ctk.CTkLabel(h_frame, text=h, text_color="white", font=ctk.CTkFont(size=12, weight="bold")).grid(row=0, column=i, pady=5)
-            
             for entry in entries:
-                row = ctk.CTkFrame(history_frame, fg_color="transparent")
-                row.pack(fill="x", pady=2)
-                
-                for i in range(len(headers)):
-                    row.grid_columnconfigure(i, weight=1)
-                
-                ctk.CTkLabel(row, text=entry[5][:16]).grid(row=0, column=0)
-                ctk.CTkLabel(row, text=f"+{entry[2]}", text_color="green").grid(row=0, column=1)
-                ctk.CTkLabel(row, text=f"₹{entry[3]}").grid(row=0, column=2)
-                ctk.CTkLabel(row, text=entry[4] or "-").grid(row=0, column=3)
-                ctk.CTkLabel(row, text=entry[6] or "").grid(row=0, column=4)
-                
-                ctk.CTkButton(
-                    row, text="Delete", width=60, fg_color=config.COLOR_DANGER,
-                    command=lambda eid=entry[0]: delete_entry(eid)
-                ).grid(row=0, column=5)
+                date_str = entry[1][:16] if entry[1] else ""
+                qty_str = f"+{entry[2]}" if entry[2] > 0 else str(entry[2])
+                self.history_tree.insert("", "end", values=(entry[0], date_str, qty_str, f"{entry[3]:.2f}", entry[4] or "-", entry[5] or ""))
 
-        def delete_entry(entry_id):
+        def _on_history_double_click(event):
+            region = self.history_tree.identify("region", event.x, event.y)
+            if region != "cell": return
+            
+            column = self.history_tree.identify_column(event.x)
+            row_id = self.history_tree.identify_row(event.y)
+            if not row_id: return
+            
+            col_idx = int(column[1:]) - 1
+            col_name = columns[col_idx]
+            
+            editable_cols = {"qty": "quantity_added", "price": "purchase_price", "supplier": "supplier_name", "note": "admin_note"}
+            if col_name not in editable_cols: return
+            
+            db_field = editable_cols[col_name]
+            
+            x, y, w, h = self.history_tree.bbox(row_id, column)
+            import tkinter.ttk as ttk
+            edit_entry = ttk.Entry(self.history_tree, font=("Arial", 12))
+            edit_entry.place(x=x, y=y, width=w, height=h)
+            
+            item_vals = self.history_tree.item(row_id)['values']
+            entry_id = item_vals[0]
+            current_val = str(item_vals[col_idx]).replace("+", "").replace("₹", "")
+            edit_entry.insert(0, current_val)
+            edit_entry.focus_set()
+            edit_entry.select_range(0, 'end')
+            
+            def save_edit(e=None):
+                val = edit_entry.get().strip()
+                try:
+                    if db_field in ("quantity_added", "purchase_price"):
+                        val = float(val) if val else 0.0
+                        if db_field == "quantity_added":
+                            old_qty_res = self.db.execute_query("SELECT quantity_added FROM stock_entries WHERE entry_id = ?", (entry_id,))
+                            if old_qty_res:
+                                old_qty = old_qty_res[0][0]
+                                diff = int(val) - old_qty
+                                self.db.execute_query("UPDATE inventory SET quantity = quantity + ? WHERE item_id = ?", (diff, item_id))
+                        val = val if db_field == "purchase_price" else int(val)
+                    
+                    self.db.execute_query(f"UPDATE stock_entries SET {db_field} = ? WHERE entry_id = ?", (val, entry_id))
+                    self.db.conn.commit()
+                    load_history()
+                    self._load_stock()
+                except ValueError: pass
+                edit_entry.destroy()
+                
+            edit_entry.bind("<Return>", save_edit)
+            edit_entry.bind("<FocusOut>", save_edit)
+            edit_entry.bind("<Escape>", lambda e: edit_entry.destroy())
+
+        def delete_entry():
+            sel = self.history_tree.selection()
+            if not sel: return
+            entry_id = self.history_tree.item(sel[0])['values'][0]
             if messagebox.askyesno("Confirm", "Delete this entry? This will reduce stock quantity."):
                 self.db.delete_stock_entry(entry_id)
                 load_history()
                 self._load_stock()
 
+        self.history_tree.bind("<Double-1>", _on_history_double_click)
+        self.history_tree.bind("<Delete>", lambda e: delete_entry())
+        self.history_tree.bind("<BackSpace>", lambda e: delete_entry())
+        
+        ctk.CTkLabel(dialog, text="Tip: Double-click Qty, Price, Supplier, or Note to edit quickly.", text_color="gray").pack(pady=(0, 10))
+        
         load_history()
 
-    def _add_stock_entry_dialog(self, parent, item_id):
-        """Dialog to add new stock entry"""
+    def _add_stock_entry_dialog(self, parent, item_id, on_save_callback):
+        """Add new stock entry dialogue"""
         d = ctk.CTkToplevel(parent)
-        d.title("Add Stock")
-        d.geometry("400x400")
+        d.title("Add Stock Entry")
+        d.geometry("400x500")
         d.transient(parent)
         d.grab_set()
         
-        ctk.CTkLabel(d, text="Add Stock Quantity", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=20)
+        main_frame = ctk.CTkFrame(d, fg_color="transparent")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
         
-        entries = {}
-        for field in ["Quantity", "Price", "Supplier", "Note"]:
-            f = ctk.CTkFrame(d, fg_color="transparent")
-            f.pack(fill="x", padx=20, pady=5)
-            ctk.CTkLabel(f, text=field, width=80, anchor="w").pack(side="left")
-            e = ctk.CTkEntry(f)
-            e.pack(side="left", fill="x", expand=True)
-            entries[field] = e
-            
+        item = self.db.execute_query("SELECT purchase_price, supplier_name FROM inventory WHERE item_id = ?", (item_id,))[0]
+        
+        ctk.CTkLabel(main_frame, text="Quantity to Add*", font=("Arial", 12, "bold")).pack(anchor="w")
+        qty_entry = ctk.CTkEntry(main_frame)
+        qty_entry.pack(fill="x", pady=(0, 15))
+        qty_entry.focus_set()
+        
+        ctk.CTkLabel(main_frame, text="Purchase Price (₹)*", font=("Arial", 12, "bold")).pack(anchor="w")
+        price_entry = ctk.CTkEntry(main_frame)
+        price_entry.insert(0, str(item[0]))
+        price_entry.pack(fill="x", pady=(0, 15))
+        
+        ctk.CTkLabel(main_frame, text="Supplier Name", font=("Arial", 12, "bold")).pack(anchor="w")
+        supplier_entry = ctk.CTkEntry(main_frame)
+        if item[1]: supplier_entry.insert(0, item[1])
+        supplier_entry.pack(fill="x", pady=(0, 15))
+        
+        ctk.CTkLabel(main_frame, text="Note / Batch No", font=("Arial", 12, "bold")).pack(anchor="w")
+        note_entry = ctk.CTkEntry(main_frame)
+        note_entry.pack(fill="x", pady=(0, 20))
+        
         def save():
             try:
-                qty = int(entries["Quantity"].get())
-                price = float(entries["Price"].get())
-                supplier = entries["Supplier"].get()
-                note = entries["Note"].get()
+                qty = int(qty_entry.get())
+                price = float(price_entry.get())
+                supplier = supplier_entry.get().strip()
+                note = note_entry.get().strip()
+                
+                if qty == 0: raise ValueError("Quantity cannot be 0")
                 
                 self.db.add_stock_entry(item_id, qty, price, supplier, note)
-                
-                # Update inventory quantity
-                self.db.execute_query(
-                    "UPDATE inventory SET quantity = quantity + ?, purchase_price = ? WHERE item_id = ?",
-                    (qty, price, item_id)
-                )
-                
-                messagebox.showinfo("Success", "Stock added")
+                messagebox.showinfo("Success", "Stock updated successfully", parent=d)
                 d.destroy()
-                parent.lift() # Refresh parent
-                # We need to refresh the history view, which requires reloading the load_history function
-                # Since we can't easily reach into the closure, we can close the history dialog or rely on user reopening
-                # Better: pass a callback or just close. simpler to close and user reopens or just auto-refresh if we could.
-                # For now, let's just close the add dialog. The User handles refresh in _view_history by clicking, but real-time is better.
-                # Actually, I can call the parent's load_history if I refactor slightly, but simpler:
-                self._load_stock() # Refresh main table
+                on_save_callback()
+                self._load_stock()
+            except ValueError as e:
+                messagebox.showerror("Error", str(e), parent=d)
                 
-            except ValueError:
-                messagebox.showerror("Error", "Invalid number format")
-        
-        ctk.CTkButton(d, text="Save", command=save, fg_color=config.COLOR_SUCCESS).pack(pady=20)
+        ctk.CTkButton(main_frame, text="Save Entry", fg_color=config.COLOR_SUCCESS, command=save).pack(fill="x", pady=10)
 
     def _edit_item(self, item_id):
         """Edit stock item"""

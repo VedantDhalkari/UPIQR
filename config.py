@@ -1,5 +1,5 @@
 """
-Configuration Module for Shree Ganesha SilkManagement System
+Configuration Module for Shree Ganesha Silk System
 Contains all application settings, colors, and constants for the premium light theme
 """
 
@@ -19,6 +19,7 @@ DEFAULT_PASSWORD = "admin"
 GST_RATE = 0  # GST Disabled
 LOW_STOCK_THRESHOLD = 5
 BILL_PREFIX = "ESB"
+LOGO_PATH = "logo.jpg"
 
 # Premium Light Theme - Color Palette
 # Primary Colors (Purple/Lavender)
@@ -135,7 +136,7 @@ ANIMATION_SLOW = 500
 
 # File Paths
 INVOICES_DIR = "invoices"
-LOGO_PATH = "logo.png"  # Optional logo file
+LOGO_PATH = "logo.jpg"  # Actual logo file
 
 # Settings Keys
 SETTING_SHOP_NAME = "shop_name"

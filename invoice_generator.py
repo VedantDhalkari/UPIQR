@@ -101,9 +101,13 @@ class InvoiceGenerator:
 
         items = []
         for item in items_data:
+            item_name = item[1]
+            if item[2] < 0:
+                item_name += " (Returned/Replaced)"
+                
             items.append({
                 "sku": item[0],
-                "name": item[1],
+                "name": item_name,
                 "qty": item[2],
                 "rate": item[3],
                 "amount": item[4]
@@ -120,73 +124,7 @@ class InvoiceGenerator:
 
         return self._create_pdf(invoice_data, items, payments)
 
-    def generate_purchase_invoice(self, purchase_id: int) -> str:
-        """
-        Generate PDF invoice for a purchase.
-        
-        Args:
-            purchase_id: Purchase ID from database
-            
-        Returns:
-            Path to generated PDF file
-        """
-        # Get purchase details
-        purchase_data = self.db.execute_query(
-            """SELECT p.purchase_id, p.invoice_number, p.purchase_date, p.total_amount, 
-                      p.gst_amount, p.other_expenses, p.notes, 
-                      s.name, s.phone, s.address, s.gstin, p.bill_date, p.transport, p.lr_no
-               FROM purchases p
-               LEFT JOIN suppliers s ON p.supplier_id = s.supplier_id
-               WHERE p.purchase_id = ?""",
-            (purchase_id,)
-        )[0]
-        
-        # Get purchase items
-        items_data = self.db.execute_query(
-            """SELECT sku_code, item_name, quantity, purchase_rate, total_amount
-               FROM purchase_items WHERE purchase_id = ?""",
-            (purchase_id,)
-        )
-        
-        # Format data for PDF reusing the same visual dictionary structure
-        invoice_data = {
-            "bill_number": f"PUR-{purchase_data[0]}",
-            "date": purchase_data[11] or purchase_data[2][:10], # Prefer explicit bill date
-            "customer_name": purchase_data[7] or "Unknown Supplier", # Using supplier as customer
-            "customer_phone": purchase_data[8] or "N/A",
-            "subtotal": purchase_data[3] - (purchase_data[4] + purchase_data[5]), # Work backwards
-            "discount_amount": 0, # Purchases don't currently track discount here
-            "gst_amount": purchase_data[4],
-            "grand_total": purchase_data[3] + purchase_data[5], # total_amount + expenses
-            "amount_paid": purchase_data[3] + purchase_data[5], # Assume paid for purchases
-            "balance_due": 0
-        }
-        
-        items = []
-        for item in items_data:
-            items.append({
-                "sku": item[0],
-                "name": item[1],
-                "qty": item[2],
-                "rate": item[3],
-                "amount": item[4]
-            })
-            
-        # Add expenses as an item line if present
-        if purchase_data[5] > 0:
-            items.append({
-                "sku": "EXP",
-                "name": f"Transport/Other Expenses (LR: {purchase_data[13] or 'N/A'})",
-                "qty": 1,
-                "rate": purchase_data[5],
-                "amount": purchase_data[5]
-            })
-            
-        # No payments ledger for purchases yet
-        payments = []
-        
-        return self._create_pdf(invoice_data, items, payments)
-        
+
     def _create_pdf(self, data: dict, items: list, payments: list) -> str:
         """Internal method to create PDF with the specific template layout."""
         # Get shop details from config
@@ -214,12 +152,17 @@ class InvoiceGenerator:
             canvas.setFillColor(PURPLE_COLOR)
 
             # --- Header ---
-            # Logo (Ensure 'logo.jpg' is in your project dir)
-            import os
+            # Logo
+            import os, sys
             try:
-                logo_path = os.path.join(Path.cwd(), "logo.jpg")
+                if hasattr(sys, '_MEIPASS'):
+                    base_path = sys._MEIPASS
+                else:
+                    base_path = os.path.dirname(os.path.abspath(__file__))
+                logo_path = os.path.join(base_path, config.LOGO_PATH)
                 canvas.drawImage(logo_path, 0.7 * inch, A4[1] - 1.75 * inch, width=1.25 * inch, height=1.25 * inch, preserveAspectRatio=True)
-            except Exception:
+            except Exception as e:
+                print("Logo missing from PDF generation:", e)
                 # Placeholder if logo not found
                 canvas.rect(0.5 * inch, A4[1] - 1.75 * inch, 1.25 * inch, 1.25 * inch)
                 canvas.drawString(0.7 * inch, A4[1] - 1.1 * inch, "LOGO")
@@ -340,39 +283,46 @@ class InvoiceGenerator:
         for _ in range(rows_to_add):
             table_data.append(["", "", "", "", "", ""])
 
-        # Add Totals Rows (Subtotal, Discount, Grand Total, Paid, Due)
-        # To match the "Perfect" image, we should probably show Subtotal/Discount too if they exist.
-        # But to be safe and fix the crash first, let's stick to the 3 we added BUT fix the indices.
-        # Ideally: Subtotal, Discount (if any), Grand Total, Paid, Due.
+        total_qty = sum(item["qty"] for item in items)
+        total_distinct_items = len(items)
+
+        # Add Totals Rows dynamically to hide zero values
+        totals_list = []
+        totals_list.append(("Total Items", total_distinct_items))
+        totals_list.append(("Total Qty", total_qty))
+
+        has_tax_discount = data.get('discount_amount', 0) > 0 or data.get('gst_amount', 0) > 0
+        if has_tax_discount:
+            totals_list.append(("Sub Total", data.get('subtotal', 0)))
+        if data.get('discount_amount', 0) > 0:
+            totals_list.append(("Discount", data['discount_amount']))
+        if data.get('gst_amount', 0) > 0:
+            totals_list.append(("GST", data['gst_amount']))
+            
+        totals_list.append(("Grand Total", data['grand_total']))
         
-        # Let's add Subtotal and Discount to be more detailed
-        table_data.append(["", "", "", "", "Sub Total", f"{data['subtotal']:.2f}"])
-        table_data.append(["", "", "", "", "Discount", f"{data['discount_amount']:.2f}"])
-        table_data.append(["", "", "", "", "GST", f"{data['gst_amount']:.2f}"])
-        table_data.append(["", "", "", "", "Grand Total", f"{data['grand_total']:.2f}"])
-        
-        # Safe float conversion
         paid = data.get('amount_paid') or 0.0
         due = data.get('balance_due') or 0.0
         
-        table_data.append(["", "", "", "", "Amount Paid", f"{paid:.2f}"])
-        table_data.append(["", "", "", "", "Balance Due", f"{due:.2f}"])
-        
-        # Total 6 rows added.
-        # Indices: 
-        # -1: Due
-        # -2: Paid
-        # -3: Grand Total
-        # -4: GST
-        # -5: Discount
-        # -6: Sub Total
-        
-        # Create the main table
+        is_purchase = str(data.get("bill_number", "")).startswith("PUR")
+        if not is_purchase:
+            totals_list.append(("Amount Paid", paid))
+            if due > 0:
+                totals_list.append(("Balance Due", due))
+                
+        num_totals = len(totals_list)
+        for label, val in totals_list:
+            if label in ("Total Items", "Total Qty"):
+                val_str = str(int(val))
+            else:
+                val_str = f"{val:.2f}"
+            table_data.append(["", "", "", "", label, val_str])
+            
         main_table = Table(table_data, colWidths=col_widths, repeatRows=1)
 
         # Define Table Styling
         style_cmds = [
-            # --- Header Style ---
+            # Header
             ('BACKGROUND', (0, 0), (-1, 0), PURPLE_COLOR),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
             ('FONTNAME', (0, 0), (-1, 0), FONT_BOLD),
@@ -381,35 +331,29 @@ class InvoiceGenerator:
             ('TOPPADDING', (0, 0), (-1, 0), 8),
             ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
 
-            # --- General Cell Style ---
-            ('GRID', (0, 0), (-1, -1), 1.5, PURPLE_COLOR), # Thick purple grid
+            # Grid
+            ('GRID', (0, 0), (-1, -1), 1.5, PURPLE_COLOR),
             ('TEXTCOLOR', (0, 1), (-1, -1), PURPLE_COLOR),
             ('FONTNAME', (0, 1), (-1, -1), FONT_REGULAR),
             ('FONTSIZE', (0, 1), (-1, -1), 10),
-            ('ALIGN', (0, 1), (0, -1), 'CENTER'), # Sr. No. center
-            ('ALIGN', (1, 1), (1, -7), 'LEFT'),   # Particulars left (-7 because we added 6 rows)
-            ('ALIGN', (3, 1), (-1, -7), 'CENTER'), # Qty, Rate center
-            ('ALIGN', (-1, 1), (-1, -7), 'RIGHT'), # Amount right
-
-            # --- Totals Section Style (Last 6 rows) ---
-            # Merge empty cells to the left of the labels
-            ('SPAN', (0, -6), (3, -6)), # Sub Total
-            ('SPAN', (0, -5), (3, -5)), # Discount
-            ('SPAN', (0, -4), (3, -4)), # GST
-            ('SPAN', (0, -3), (3, -3)), # Grand Total
-            ('SPAN', (0, -2), (3, -2)), # Paid
-            ('SPAN', (0, -1), (3, -1)), # Due
-
-            # Style for Labels
-            ('BACKGROUND', (4, -6), (4, -1), PURPLE_COLOR),
-            ('TEXTCOLOR', (4, -6), (4, -1), colors.white),
-            ('FONTNAME', (4, -6), (4, -1), FONT_BOLD),
-            ('ALIGN', (4, -6), (4, -1), 'CENTER'),
-            
-            # Style for Values
-            ('ALIGN', (-1, -6), (-1, -1), 'RIGHT'),
-            ('FONTNAME', (-1, -6), (-1, -1), FONT_BOLD), 
+            ('ALIGN', (0, 1), (0, -1), 'CENTER'), 
+            ('ALIGN', (1, 1), (1, -(num_totals + 1)), 'LEFT'), 
+            ('ALIGN', (3, 1), (-1, -(num_totals + 1)), 'CENTER'), 
+            ('ALIGN', (-1, 1), (-1, -(num_totals + 1)), 'RIGHT'), 
         ]
+        
+        # Dynamic styling for total rows
+        for i in range(1, num_totals + 1):
+            row_idx = -i
+            style_cmds.extend([
+                ('SPAN', (0, row_idx), (3, row_idx)),
+                ('BACKGROUND', (4, row_idx), (4, row_idx), PURPLE_COLOR),
+                ('TEXTCOLOR', (4, row_idx), (4, row_idx), colors.white),
+                ('FONTNAME', (4, row_idx), (4, row_idx), FONT_BOLD),
+                ('ALIGN', (4, row_idx), (4, row_idx), 'CENTER'),
+                ('ALIGN', (-1, row_idx), (-1, row_idx), 'RIGHT'),
+                ('FONTNAME', (-1, row_idx), (-1, row_idx), FONT_BOLD),
+            ])
         
         main_table.setStyle(TableStyle(style_cmds))
         story.append(main_table)

@@ -1,6 +1,6 @@
 """
 Database Manager Module
-Handles all SQLite database operations for the Shree Ganesha Silkmanagement system
+Handles all SQLite database operations for the Shree Ganesha Silk system
 """
 
 import sqlite3
@@ -26,11 +26,14 @@ class DatabaseManager:
     
     def get_connection(self):
         """Get a raw connection for transaction management"""
-        return sqlite3.connect(self.db_name)
+        conn = sqlite3.connect(self.db_name, timeout=20)
+        conn.execute("PRAGMA journal_mode=WAL;")
+        return conn
     
     def connect(self):
         """Establish database connection"""
-        self.conn = sqlite3.connect(self.db_name)
+        self.conn = sqlite3.connect(self.db_name, timeout=20)
+        self.conn.execute("PRAGMA journal_mode=WAL;")
         self.cursor = self.conn.cursor()
     
     def disconnect(self):
@@ -200,6 +203,25 @@ class DatabaseManager:
             self.cursor.execute("ALTER TABLE purchase_items ADD COLUMN batch_no TEXT")
         except: pass
         
+        # New Phase 7 Columns (HSN)
+        try:
+            self.cursor.execute("ALTER TABLE inventory ADD COLUMN hsn_code TEXT")
+        except: pass
+        try:
+            self.cursor.execute("ALTER TABLE purchase_items ADD COLUMN hsn_code TEXT")
+        except: pass
+        try:
+            self.cursor.execute("ALTER TABLE sale_items ADD COLUMN hsn_code TEXT")
+        except: pass
+        
+        # Ensure default UPI payment settings exist
+        try:
+            self.cursor.execute("INSERT OR IGNORE INTO settings (setting_key, setting_value) VALUES ('upi_id', 'shreeganesha@ybl')")
+        except: pass
+        try:
+            self.cursor.execute("INSERT OR IGNORE INTO settings (setting_key, setting_value) VALUES ('shop_name', 'Shree Ganesha Silk')")
+        except: pass
+        
         # Sale Items table
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS sale_items (
@@ -248,6 +270,18 @@ class DatabaseManager:
                 date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 admin_note TEXT,
                 FOREIGN KEY (item_id) REFERENCES inventory(item_id)
+            )
+        ''')
+        
+        # Shop Expenses table
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS expenses (
+                expense_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                amount REAL NOT NULL,
+                category TEXT NOT NULL,
+                description TEXT,
+                expense_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_by TEXT
             )
         ''')
 

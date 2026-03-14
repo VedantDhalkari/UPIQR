@@ -58,8 +58,16 @@ def build_commercial():
         f'"{pyinstaller_exe}" --noconfirm --onefile --windowed '
         f'--name "ShreeGaneshaSilk_Enterprise" '
         f'--clean '
+        f'--icon=NONE '
+        f'--add-data="config.py;." '
+        f'--add-data="logo.jpg;." '
+        f'--hidden-import=PIL._tkinter_finder '
         f'--collect-all numpy '
+        f'--collect-all matplotlib '
         f'--collect-all customtkinter '
+        f'--collect-all tkcalendar '
+        f'--collect-all babel '
+        f'--collect-all reportlab '
         f'main.py'
     )
     
@@ -78,6 +86,11 @@ def build_commercial():
         
     except Exception as e:
         print(f"Build Failed: {e}")
+        
+    finally:
+        # Reset directory to prevent locking up subsequent runs
+        if obf_dir != ".":
+            os.chdir("..")
 
 if __name__ == "__main__":
     build_commercial()

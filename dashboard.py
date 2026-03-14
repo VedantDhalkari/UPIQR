@@ -74,11 +74,15 @@ class Dashboard(ctk.CTkFrame):
         brand_frame.pack(fill="x", pady=(config.SPACING_XL, config.SPACING_LG))
         brand_frame.pack_propagate(False)
         
-        import os
+        import os, sys
         from PIL import Image
         
         try:
-            logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.jpg")
+            if hasattr(sys, '_MEIPASS'):
+                base_path = sys._MEIPASS
+            else:
+                base_path = os.path.dirname(os.path.abspath(__file__))
+            logo_path = os.path.join(base_path, config.LOGO_PATH)
             logo_img = ctk.CTkImage(light_image=Image.open(logo_path), size=(80, 80))
             logo_label = ctk.CTkLabel(brand_frame, text="", image=logo_img)
         except Exception:
@@ -91,7 +95,7 @@ class Dashboard(ctk.CTkFrame):
         
         app_name_label = ctk.CTkLabel(
             brand_frame,
-            text="Shree Ganesha SilkManager",
+            text="Shree Ganesha Silk",
             font=ctk.CTkFont(size=16, weight="bold"),
             text_color=config.COLOR_PRIMARY
         )

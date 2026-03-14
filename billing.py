@@ -31,14 +31,14 @@ class BillingModule(ctk.CTkFrame):
         
         # Apply Base Font Size
         try:
-            base_size = int(self.db.get_setting("base_font_size") or 12)
+            self.base_size = int(self.db.get_setting("base_font_size") or 12)
         except:
-            base_size = 12
+            self.base_size = 12
             
-        self.font_sm = max(base_size - 2, 8)
-        self.font_md = max(base_size - 1, 9)
-        self.font_lg = base_size
-        self.font_xl = max(base_size + 2, 12)
+        self.font_sm = max(self.base_size - 2, 8)
+        self.font_md = max(self.base_size - 1, 9)
+        self.font_lg = self.base_size
+        self.font_xl = max(self.base_size + 2, 12)
         
         # Header
         title = f"Edit Bill #{sale_id}" if sale_id else "New Bill / Invoice"
@@ -78,6 +78,23 @@ class BillingModule(ctk.CTkFrame):
         
         self.customer_name_entry = self._create_labeled_input(cw, "Customer Name", 2)
         self.customer_phone_entry = self._create_labeled_input(cw, "Customer Phone", 3)
+        
+        # Phone Validation Setup
+        self.phone_var = ctk.StringVar()
+        self.customer_phone_entry.configure(textvariable=self.phone_var)
+        
+        def validate_phone(*args):
+            val = self.phone_var.get()
+            # Remove anything that isn't a digit
+            filtered = ''.join(filter(str.isdigit, val))
+            # Restrict to 10 digits
+            if len(filtered) > 10:
+                filtered = filtered[:10]
+            # Update entry if needed
+            if val != filtered:
+                self.phone_var.set(filtered)
+                
+        self.phone_var.trace_add("write", validate_phone)
         
         try:
             res = self.db.execute_query("SELECT final_amount FROM sales ORDER BY sale_id DESC LIMIT 1")
@@ -133,10 +150,10 @@ class BillingModule(ctk.CTkFrame):
         
         # Configure Treeview Style
         style = ttk.Style()
-        row_height = max(int(self.font_md * 2.5), 20)
+        row_height = max(int(self.base_size * 2.5), 20)
         style.theme_use('default')
-        style.configure("Billing.Treeview", background="white", foreground="black", rowheight=row_height, fieldbackground="white", font=("Arial", self.font_md), borderwidth=0)
-        style.configure("Billing.Treeview.Heading", background=config.COLOR_PRIMARY, foreground="white", font=("Arial", max(self.font_md, 12), "bold"), relief="flat")
+        style.configure("Billing.Treeview", background="white", foreground="black", rowheight=row_height, fieldbackground="white", font=("Arial", self.base_size), borderwidth=0)
+        style.configure("Billing.Treeview.Heading", background=config.COLOR_PRIMARY, foreground="white", font=("Arial", self.base_size, "bold"), relief="flat")
         style.map("Billing.Treeview.Heading", background=[('active', config.COLOR_PRIMARY_DARK)])
         style.map("Billing.Treeview", background=[('selected', '#B4D5F0')])
         
@@ -181,7 +198,10 @@ class BillingModule(ctk.CTkFrame):
         right.pack(side="right", fill="both", expand=True, padx=20, pady=10)
         
         self.subtotal_label = ctk.CTkLabel(left, text="Subtotal: ₹0.00", font=("Arial", self.font_md), text_color="gray")
-        self.subtotal_label.pack(anchor="w", pady=2)
+        self.subtotal_label.pack(anchor="w", pady=(2, 0))
+        
+        self.items_count_label = ctk.CTkLabel(left, text="Total Items 0 Total Qty 0", font=("Arial", self.font_sm), text_color="gray")
+        self.items_count_label.pack(anchor="w", pady=(0, 5))
         
         discount_frame = ctk.CTkFrame(left, fg_color="transparent")
         discount_frame.pack(anchor="w", fill="x", pady=2)
@@ -322,8 +342,8 @@ class BillingModule(ctk.CTkFrame):
             price = float(self.entry_vars['price'].get() or 0)
             qty = int(self.entry_vars['qty'].get() or 0)
             
-            if not name or qty <= 0:
-                messagebox.showerror("Error", "Name and Qty required")
+            if not name or qty == 0:
+                messagebox.showerror("Error", "Name and positive/negative Qty required")
                 return
                 
             if self.current_item_id and qty > self.current_avail_qty:
@@ -423,7 +443,7 @@ class BillingModule(ctk.CTkFrame):
                     self.cart[t_idx]['total'] = self.cart[t_idx]['price'] * self.cart[t_idx]['quantity']
                 elif c_idx == 5: # Qty
                     new_qty = int(new_val)
-                    if new_qty > 0:
+                    if new_qty != 0:
                         if new_qty <= self.cart[t_idx]['available_qty']:
                             self.cart[t_idx]['quantity'] = new_qty
                             self.cart[t_idx]['total'] = self.cart[t_idx]['price'] * self.cart[t_idx]['quantity']
@@ -477,8 +497,12 @@ class BillingModule(ctk.CTkFrame):
         """Update cart summary"""
         totals = self._calculate_totals()
         
+        total_qty = sum(item.get('quantity', 0) for item in self.cart)
+        total_items = len(self.cart)
+        
         self.subtotal_label.configure(text=f"Subtotal: ₹{totals['subtotal']:,.2f}")
-        self.discount_label.configure(text=f"Discount ({totals['discount_percent']}%): ₹{totals['discount_amount']:,.2f}")
+        self.items_count_label.configure(text=f"Total Items {total_items} Total Qty {int(total_qty)}")
+        self.discount_label.configure(text=f"Discount ({totals['discount_percent']}%): -₹{totals['discount_amount']:,.2f}")
         self.gst_label.configure(text=f"GST ({totals['gst_percent']}%): +₹{totals['gst_amount']:,.2f}")
         
         self.total_label.configure(text=f"Total: ₹{totals['total']:,.2f}")
@@ -689,19 +713,18 @@ class BillingModule(ctk.CTkFrame):
             # Calculate totals
             totals = self._calculate_totals()
             
+            # Use a single connection for the transaction
+            conn = self.db.get_connection()
+            cursor = conn.cursor()
+            
             if self.editing_sale_id:
                 # Update existing sale
                 sale_id = self.editing_sale_id
                 
                 # 1. Revert Stock for ORIGINAL items
-                old_items = self.db.execute_query("SELECT item_id, quantity FROM sale_items WHERE sale_id = ?", (sale_id,))
+                old_items = self.db.execute_query("SELECT item_id, quantity FROM sale_items WHERE sale_id = ?", (sale_id,), cursor=cursor)
                 for item_id, qty in old_items:
-                    # Check if custom (using placeholder ID? Need to check SKU or ID)
-                    # Actually get_or_create_custom_item returns an ID. 
-                    # If SKU was 'CUSTOM', we don't track stock.
-                    # We should check SKU from sale_items to be sure.
-                    # Let's simple check:
-                    self.db.execute_query("UPDATE inventory SET quantity = quantity + ? WHERE item_id = ? AND sku_code != 'CUSTOM'", (qty, item_id))
+                    self.db.execute_query("UPDATE inventory SET quantity = quantity + ? WHERE item_id = ? AND sku_code != 'CUSTOM'", (qty, item_id), cursor=cursor)
 
                 # 2. Update Sale Record
                 payment_status = "Paid"
@@ -715,7 +738,7 @@ class BillingModule(ctk.CTkFrame):
                 if balance > 0: payment_status = "Partial" if amount_paid > 0 else "Pending"
 
                 # Get old payment to log difference
-                old_paid_res = self.db.execute_query("SELECT amount_paid FROM sales WHERE sale_id=?", (sale_id,))
+                old_paid_res = self.db.execute_query("SELECT amount_paid FROM sales WHERE sale_id=?", (sale_id,), cursor=cursor)
                 old_paid = old_paid_res[0][0] if old_paid_res else 0
 
                 self.db.execute_query(
@@ -725,7 +748,8 @@ class BillingModule(ctk.CTkFrame):
                        WHERE sale_id=?""",
                     (self.customer_name_entry.get() or None, self.customer_phone_entry.get() or None,
                      totals['subtotal'], totals['discount_percent'], totals['discount_amount'],
-                     totals['gst_amount'], totals['total'], amount_paid, balance, payment_status, sale_id)
+                     totals['gst_amount'], totals['total'], amount_paid, balance, payment_status, sale_id),
+                     cursor=cursor
                 )
                 
                 # Log Payment Change if it increased
@@ -733,29 +757,23 @@ class BillingModule(ctk.CTkFrame):
                 if diff > 0:
                     self.db.execute_insert(
                         "INSERT INTO payment_history (sale_id, amount_paid, payment_method, activity_note) VALUES (?, ?, ?, ?)",
-                        (sale_id, diff, "Cash", "Exchange / Bill Updated")
+                        (sale_id, diff, "Cash", "Exchange / Bill Updated"), cursor=cursor
                     )
                 
                 # 3. Delete old items
-                self.db.execute_query("DELETE FROM sale_items WHERE sale_id = ?", (sale_id,))
+                self.db.execute_query("DELETE FROM sale_items WHERE sale_id = ?", (sale_id,), cursor=cursor)
                 
-                # 4. Insert new items (Standard logic below will handle stock deduction)
-                # We reuse the logic below but need to skip the INSERT sales part.
-                
-                bill_number = self.db.execute_query("SELECT bill_number FROM sales WHERE sale_id=?", (sale_id,))[0][0]
+                bill_number = self.db.execute_query("SELECT bill_number FROM sales WHERE sale_id=?", (sale_id,), cursor=cursor)[0][0]
                 
             else:
                 # NEW SALE LOGIC
-                # Generate Sequential Bill Number (ESB-1, ESB-2...)
-                # Get max sale_id
-                last_id_res = self.db.execute_query("SELECT MAX(sale_id) FROM sales")
+                last_id_res = self.db.execute_query("SELECT MAX(sale_id) FROM sales", cursor=cursor)
                 next_id = 1
                 if last_id_res and last_id_res[0][0]:
                     next_id = last_id_res[0][0] + 1
                 
                 bill_number = f"ESB-{next_id}"
                 
-                # Insert sale
                 sale_id = self.db.execute_insert(
                     """INSERT INTO sales (bill_number, customer_name, customer_phone,
                        total_amount, discount_percent, discount_amount, gst_amount,
@@ -764,10 +782,9 @@ class BillingModule(ctk.CTkFrame):
                     (bill_number, self.customer_name_entry.get() or None,
                      self.customer_phone_entry.get() or None, totals['subtotal'], totals['discount_percent'],
                      totals['discount_amount'], totals['gst_amount'], totals['total'], "Cash",
-                     self.current_user['username'])
+                     self.current_user['username']), cursor=cursor
                 )
                 
-                # Payment Details Update for New Sale
                 try:
                     paid_str = self.amount_paid_entry.get().strip()
                     amount_paid = float(paid_str) if paid_str else totals['total']
@@ -781,19 +798,26 @@ class BillingModule(ctk.CTkFrame):
                 
                 self.db.execute_query(
                     "UPDATE sales SET amount_paid = ?, balance_due = ?, payment_status = ? WHERE sale_id = ?",
-                    (amount_paid, balance_due, payment_status, sale_id)
+                    (amount_paid, balance_due, payment_status, sale_id), cursor=cursor
                 )
                 
-                # Insert initial payment record
                 if amount_paid > 0:
                     self.db.execute_insert(
                         "INSERT INTO payment_history (sale_id, amount_paid, payment_method, activity_note) VALUES (?, ?, ?, ?)",
-                        (sale_id, amount_paid, "Cash", "Initial Payment")
+                        (sale_id, amount_paid, "Cash", "Initial Payment"), cursor=cursor
                     )
             
-            # Insert sale items and update inventory (Common for both New and Edit)
+            # Tag items if there is a return/exchange
+            has_return = any(item['quantity'] < 0 for item in self.cart)
+            if has_return:
+                for item in self.cart:
+                    if item['quantity'] < 0 and "(Returned)" not in item['name']:
+                        item['name'] = f"{item['name']} (Returned)"
+                    elif item['quantity'] > 0 and "(Replaced)" not in item['name']:
+                        item['name'] = f"{item['name']} (Replaced)"
+
+            # Insert sale items and update inventory
             for item in self.cart:
-                # Handle Custom Items (Get placeholder ID)
                 item_id_to_store = item['item_id']
                 if item_id_to_store is None:
                     item_id_to_store = self.db.get_or_create_custom_item()
@@ -803,15 +827,17 @@ class BillingModule(ctk.CTkFrame):
                        quantity, unit_price, total_price)
                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
                     (sale_id, item_id_to_store, item['sku'], item['name'],
-                     item['quantity'], item['price'], item['total'])
+                     item['quantity'], item['price'], item['total']), cursor=cursor
                 )
                 
-                # Update inventory ONLY for actual stock items (not custom placeholder)
                 if item['item_id'] and item['sku'] != 'CUSTOM':
                     self.db.execute_query(
                         "UPDATE inventory SET quantity = quantity - ? WHERE item_id = ?",
-                        (item['quantity'], item['item_id'])
+                        (item['quantity'], item['item_id']), cursor=cursor
                     )
+            
+            # Commit Database Transaction
+            conn.commit()
             
             # Generate invoice PDF
             try:
@@ -900,6 +926,9 @@ class BillingModule(ctk.CTkFrame):
             self.editing_sale_id = None
             self.checkout_btn.configure(text="💳 Complete Sale", fg_color=config.COLOR_SUCCESS)
             
+            # Show UPI QR payment popup
+            self.after(200, lambda: self._show_upi_qr_popup(bill_number, totals['total']))
+            
             # Clear UI for next bill
             self.cart.clear()
             self._refresh_cart()
@@ -923,9 +952,87 @@ class BillingModule(ctk.CTkFrame):
                 self.bill_no_entry.insert(0, "Auto-Generated")
                 self.bill_no_entry.configure(state="readonly")
                 
-            self.header.configure(title="New Bill / Invoice")
+            self.header.set_title("New Bill / Invoice")
             self._update_summary()
-            # Reset header title? Needs reload or simple label update if I saved it
                 
         except Exception as e:
+            # If the DB connection was active, rollback it before exiting
+            try: conn.rollback()
+            except: pass
             messagebox.showerror("Error", f"Failed to complete sale:\n\n{str(e)}\n\nPlease contact support if this persists.")
+
+    def _show_upi_qr_popup(self, bill_number, amount):
+        """Show UPI QR code popup for customer payment"""
+        import tkinter as tk
+        from PIL import Image, ImageTk
+        import io, qrcode
+        
+        # Fetch UPI ID from settings or use default
+        upi_id = self.db.get_setting("upi_id") or "shreeganesha@upi"
+        payee_name = self.db.get_setting("shop_name") or "Shree Ganesha Silk"
+        
+        d = ctk.CTkToplevel(self)
+        d.title(f"UPI Payment - Bill {bill_number}")
+        d.geometry("460x580")
+        d.resizable(False, False)
+        d.transient(self.winfo_toplevel())
+        d.grab_set()
+        
+        # Center the dialog
+        d.update_idletasks()
+        sw = d.winfo_screenwidth(); sh = d.winfo_screenheight()
+        x = (sw - 460) // 2; y = (sh - 580) // 2
+        d.geometry(f"+{x}+{y}")
+        
+        # Header
+        hdr = ctk.CTkFrame(d, fg_color=config.COLOR_PRIMARY, corner_radius=0)
+        hdr.pack(fill="x")
+        ctk.CTkLabel(hdr, text="📲 UPI Payment", font=("Arial", 20, "bold"), text_color="white").pack(pady=12)
+        ctk.CTkLabel(hdr, text=f"Bill No: {bill_number}", font=("Arial", 12), text_color="white").pack(pady=(0, 12))
+        
+        # Amount box
+        amt_frame = ctk.CTkFrame(d, fg_color="#f0f9ff", corner_radius=10)
+        amt_frame.pack(fill="x", padx=20, pady=15)
+        ctk.CTkLabel(amt_frame, text="Amount to Pay", font=("Arial", 12), text_color="gray").pack(pady=(10, 2))
+        ctk.CTkLabel(amt_frame, text=f"₹{amount:,.2f}", font=("Arial", 30, "bold"), text_color=config.COLOR_SUCCESS).pack(pady=(0, 10))
+        
+        # Generate QR code
+        # UPI deep link format
+        upi_link = f"upi://pay?pa={upi_id}&pn={payee_name.replace(' ', '%20')}&am={amount:.2f}&cu=INR&tn=Bill%20{bill_number}"
+        
+        try:
+            qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_H, box_size=8, border=2)
+            qr.add_data(upi_link)
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="#4a0082", back_color="white")
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            buf.seek(0)
+            photo = ImageTk.PhotoImage(Image.open(buf).resize((220, 220), Image.LANCZOS))
+            
+            qr_lbl = tk.Label(d, image=photo, bg="white", bd=2, relief="solid")
+            qr_lbl.image = photo  # Keep reference
+            qr_lbl.pack(pady=5)
+        except Exception as e:
+            ctk.CTkLabel(d, text=f"QR generation error: {e}", text_color="red").pack(pady=10)
+        
+        # UPI ID info
+        info_frame = ctk.CTkFrame(d, fg_color="transparent")
+        info_frame.pack(fill="x", padx=20, pady=5)
+        ctk.CTkLabel(info_frame, text="Scan to pay using any UPI app:", font=("Arial", 11), text_color="gray").pack()
+        ctk.CTkLabel(info_frame, text=f"BHIM | GPay | PhonePe | Paytm | Amazon Pay", font=("Arial", 11, "bold"), text_color=config.COLOR_PRIMARY).pack(pady=2)
+        
+        upi_row = ctk.CTkFrame(info_frame, fg_color="#ede9fe", corner_radius=8)
+        upi_row.pack(fill="x", pady=5)
+        ctk.CTkLabel(upi_row, text=f"UPI ID:  {upi_id}", font=("Arial", 12, "bold"), text_color="#4a0082").pack(side="left", padx=10, pady=6)
+        
+        def copy_upi():
+            d.clipboard_clear()
+            d.clipboard_append(upi_id)
+            messagebox.showinfo("Copied!", "UPI ID copied to clipboard.")
+        
+        ctk.CTkButton(upi_row, text="📋 Copy", width=70, height=28, fg_color="#7c3aed", command=copy_upi).pack(side="right", padx=8, pady=6)
+        
+        # Close button
+        ctk.CTkButton(d, text="✅ Payment Done / Close", fg_color=config.COLOR_SUCCESS, height=40, command=d.destroy).pack(fill="x", padx=20, pady=15)
+

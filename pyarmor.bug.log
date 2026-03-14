@@ -1,7 +1,7 @@
 [BUG]: out of license
 
 ## Command Line
-D:\files\.venv\Scripts\pyarmor gen -O obfuscated_dist auth.py billing.py bill_management.py boutique_management_system.py calculator.py charts.py config.py dashboard.py database.py debug_check.py debug_passfix.py debug_pin.py debug_users.py generate_sample_data.py invoice_generator.py license_manager.py main.py new_stock.py reports.py reset_pass.py rewrite.py search.py settings.py stock.py test_logo.py test_search_ui.py ui_components.py
+D:\runingP\files\.venv\Scripts\pyarmor gen -O obfuscated_dist auth.py billing.py bill_management.py boutique_management_system.py calculator.py charts.py config.py dashboard.py database.py debug_check.py debug_passfix.py debug_pin.py debug_users.py generate_sample_data.py invoice_generator.py license_manager.py main.py new_stock.py purchase_invoice_generator.py purchase_management.py reports.py reset_pass.py rewrite.py search.py settings.py stock.py test_logo.py test_search_ui.py ui_components.py
 
 ## Environments
 Python 3.12.10

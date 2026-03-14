@@ -1,6 +1,6 @@
 @echo off
 echo ========================================
-echo Shree Ganesha SilkManagement System Compiler
+echo Shree Ganesha Silk System Compiler
 echo ========================================
 echo.
 

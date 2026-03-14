@@ -1,0 +1,33 @@
+﻿Requirement already satisfied: pyarmor in .\.venv\Lib\site-packages (9.2.3)
+Requirement already satisfied: pyinstaller in .\.venv\Lib\site-packages (6.3.0)
+Requirement already satisfied: cryptography in .\.venv\Lib\site-packages (46.0.5)
+Requirement already satisfied: cffi in .\.venv\Lib\site-packages (2.0.0)
+Requirement already satisfied: pyarmor.cli.core~=8.1.0 in .\.venv\Lib\site-packages (from pyarmor) (8.1.0)
+Requirement already satisfied: setuptools>=42.0.0 in .\.venv\Lib\site-packages (from pyinstaller) (82.0.0)
+Requirement already satisfied: altgraph in .\.venv\Lib\site-packages (from pyinstaller) (0.17.5)
+Requirement already satisfied: pyinstaller-hooks-contrib>=2021.4 in .\.venv\Lib\site-packages (from pyinstaller) (2026.0)
+Requirement already satisfied: packaging>=22.0 in .\.venv\Lib\site-packages (from pyinstaller) (26.0)
+Requirement already satisfied: pefile>=2022.5.30 in .\.venv\Lib\site-packages (from pyinstaller) (2024.8.26)
+Requirement already satisfied: pywin32-ctypes>=0.2.1 in .\.venv\Lib\site-packages (from pyinstaller) (0.2.3)
+Requirement already satisfied: pycparser in .\.venv\Lib\site-packages (from cffi) (3.0)
+==================================================
+ SHREE GANESHA SILK - COMMERCIAL COMPILATION 
+==================================================
+
+[1/3] Verifying and Installing Compilation Toolchain...
+
+[EXEC] "D:\runingP\files\.venv\Scripts\python.exe" -m pip install pyarmor pyinstaller cryptography cffi
+
+[2/3] Executing Source Code Obfuscation (Cython-ready)...
+Cleaning previous build directory: obfuscated_dist
+
+[EXEC] "D:\runingP\files\.venv\Scripts\pyarmor.exe" gen -O obfuscated_dist auth.py billing.py bill_management.py boutique_management_system.py calculator.py charts.py config.py dashboard.py database.py debug_check.py debug_passfix.py debug_pin.py debug_users.py generate_sample_data.py invoice_generator.py license_manager.py main.py new_stock.py purchase_invoice_generator.py purchase_management.py reports.py reset_pass.py rewrite.py search.py settings.py stock.py test_logo.py test_search_ui.py ui_components.py
+
+[ERROR] Command failed with exit code: 2
+
+[WARNING] PyArmor Free Trial Limit Exceeded (Module > 32KB)!
+[WARNING] Bypassing source obfuscation. Falling back to native PyInstaller Node-Locking bundling...
+
+[EXEC] "D:\runingP\files\.venv\Scripts\pyinstaller.exe" --noconfirm --onefile --windowed --name "ShreeGaneshaSilk_Enterprise" --clean --icon=NONE --add-data="config.py;." --hidden-import=PIL._tkinter_finder --collect-all numpy --collect-all matplotlib --collect-all customtkinter main.py
+
+[ERROR] Command failed with exit code: 1

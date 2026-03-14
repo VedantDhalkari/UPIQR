@@ -1,5 +1,5 @@
 """
-Sample Data Generator for Shree Ganesha SilkManagement System
+Sample Data Generator for Shree Ganesha Silk System
 Run this script to populate the database with sample data for testing
 """
 
@@ -13,7 +13,7 @@ def generate_sample_data():
     conn = sqlite3.connect('boutique_database.db')
     cursor = conn.cursor()
     
-    print("🎨 Generating Sample Data for Shree Ganesha SilkManagement System")
+    print("🎨 Generating Sample Data for Shree Ganesha Silk System")
     print("="*60)
     
     # Sample inventory data

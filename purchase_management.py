@@ -13,11 +13,13 @@ import os
 class PurchaseManagementModule(ctk.CTkFrame):
     """Purchase management interface with full CRUD"""
 
-    def __init__(self, parent, db_manager, invoice_generator, **kwargs):
+    def __init__(self, parent, db_manager, invoice_generator, purchase_invoice_generator, on_edit_purchase=None, **kwargs):
         super().__init__(parent, fg_color="transparent", **kwargs)
 
         self.db = db_manager
         self.invoice_gen = invoice_generator
+        self.purchase_invoice_gen = purchase_invoice_generator
+        self.on_edit_purchase = on_edit_purchase
 
         # Font sizing
         try:
@@ -314,7 +316,7 @@ class PurchaseManagementModule(ctk.CTkFrame):
                    pi.sale_rate, pi.total_amount, pi.gst_percentage
             FROM purchase_items pi
             WHERE pi.purchase_id = ?
-            ORDER BY pi.pur_item_id
+            ORDER BY pi.purchase_item_id
         """, (purchase_id,))
 
         dialog = ctk.CTkToplevel(self)
@@ -420,7 +422,7 @@ class PurchaseManagementModule(ctk.CTkFrame):
                        command=lambda: self._print_invoice(purchase_id)).pack(side="left", padx=4)
         AnimatedButton(btn_row, text="✏️ Edit",
                        fg_color=config.COLOR_WARNING,
-                       command=lambda: [dialog.destroy(), self._edit_dialog(purchase_id)]).pack(side="left", padx=4)
+                       command=lambda: [dialog.destroy(), self.on_edit_purchase(purchase_id) if self.on_edit_purchase else None]).pack(side="left", padx=4)
         ctk.CTkButton(btn_row, text="Close",
                       fg_color="transparent", border_width=1,
                       text_color="gray",
@@ -430,107 +432,10 @@ class PurchaseManagementModule(ctk.CTkFrame):
 
     def _edit_selected(self):
         pid = self._get_selected_id()
-        if pid:
-            self._edit_dialog(pid)
+        if pid and self.on_edit_purchase:
+            self.on_edit_purchase(pid)
 
-    def _edit_dialog(self, purchase_id):
-        prow = self.db.execute_query("""
-            SELECT p.purchase_id, p.invoice_number, p.bill_date,
-                   s.name, p.transport, p.lr_no, p.gst_amount,
-                   p.other_expenses, p.agent_name
-            FROM purchases p
-            LEFT JOIN suppliers s ON p.supplier_id = s.supplier_id
-            WHERE p.purchase_id = ?
-        """, (purchase_id,))
-        if not prow:
-            return
-        pr = prow[0]
 
-        dialog = ctk.CTkToplevel(self)
-        dialog.title(f"Edit Purchase #{purchase_id}")
-        dialog.geometry("480x480")
-        dialog.transient(self.winfo_toplevel())
-        dialog.grab_set()
-        dialog.lift()
-
-        head = ctk.CTkFrame(dialog, fg_color=config.COLOR_WARNING, corner_radius=0, height=44)
-        head.pack(fill="x")
-        head.pack_propagate(False)
-        ctk.CTkLabel(head, text=f"✏️ Edit Purchase #{purchase_id}",
-                     font=ctk.CTkFont(size=self.font_lg, weight="bold"),
-                     text_color="white").pack(side="left", padx=12, pady=10)
-
-        form = ctk.CTkScrollableFrame(dialog, fg_color="transparent",
-                                      scrollbar_button_color=config.COLOR_PRIMARY)
-        form.pack(fill="both", expand=True, padx=16, pady=12)
-
-        def field(label, default_val):
-            ctk.CTkLabel(form, text=label,
-                         font=ctk.CTkFont(size=self.font_sm, weight="bold")).pack(anchor="w", pady=(8, 2))
-            e = ctk.CTkEntry(form, height=34)
-            e.insert(0, str(default_val) if default_val else "")
-            e.pack(fill="x")
-            return e
-
-        e_bill     = field("Bill No.", pr[1])
-        e_date     = field("Bill Date (DD-MM-YYYY)", self._fmt_date(pr[2]))
-        e_supplier = field("Supplier Name", pr[3])
-        e_transport= field("Transport", pr[4])
-        e_lr       = field("LR No.", pr[5])
-        e_gst      = field("GST Amount (₹)", pr[6])
-        e_exp      = field("Other Expenses (₹)", pr[7])
-        e_agent    = field("Agent Name", pr[8])
-
-        def save():
-            try:
-                # Parse DD-MM-YYYY → YYYY-MM-DD
-                raw_date = e_date.get().strip()
-                try:
-                    p = raw_date.split("-")
-                    db_date = f"{p[2]}-{p[1]}-{p[0]}" if len(p) == 3 else raw_date
-                except:
-                    db_date = raw_date
-
-                # Find supplier id (or create)
-                sup_name = e_supplier.get().strip()
-                res = self.db.execute_query(
-                    "SELECT supplier_id FROM suppliers WHERE name=?", (sup_name,))
-                if res:
-                    sup_id = res[0][0]
-                else:
-                    sup_id = self.db.execute_insert(
-                        "INSERT INTO suppliers (name) VALUES (?)", (sup_name,))
-
-                gst_val = float(e_gst.get() or 0)
-                exp_val = float(e_exp.get() or 0)
-
-                # Recalculate total from items
-                items_total = self.db.execute_query(
-                    "SELECT COALESCE(SUM(total_amount), 0) FROM purchase_items WHERE purchase_id=?",
-                    (purchase_id,))
-                items_sum = items_total[0][0] if items_total else 0
-                new_total = items_sum + gst_val + exp_val
-
-                self.db.execute_query("""
-                    UPDATE purchases SET
-                        invoice_number=?, bill_date=?, supplier_id=?,
-                        transport=?, lr_no=?, gst_amount=?,
-                        other_expenses=?, agent_name=?, total_amount=?
-                    WHERE purchase_id=?
-                """, (e_bill.get().strip(), db_date, sup_id,
-                      e_transport.get().strip(), e_lr.get().strip(),
-                      gst_val, exp_val, e_agent.get().strip(),
-                      new_total, purchase_id))
-
-                messagebox.showinfo("Saved", "Purchase updated successfully!", parent=dialog)
-                dialog.destroy()
-                self._load_purchases()
-            except Exception as ex:
-                messagebox.showerror("Error", f"Failed to save: {ex}", parent=dialog)
-
-        AnimatedButton(form, text="💾 Save Changes",
-                       fg_color=config.COLOR_SUCCESS,
-                       command=save).pack(pady=16, fill="x")
 
     # ── Delete Purchase ───────────────────────────────────────────────
 
@@ -562,7 +467,7 @@ class PurchaseManagementModule(ctk.CTkFrame):
 
     def _print_invoice(self, purchase_id):
         try:
-            path = self.invoice_gen.generate_purchase_invoice(purchase_id)
+            path = self.purchase_invoice_gen.generate_purchase_invoice(purchase_id)
             os.startfile(path)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to open invoice: {str(e)}", parent=self)

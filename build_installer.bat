@@ -1,6 +1,6 @@
 @echo off
 echo ======================================
-echo  Shree Ganesha SilkManagement System Builder
+echo  Shree Ganesha Silk System Builder
 echo  Building executable with PyInstaller
 echo ======================================
 echo.

@@ -1,6 +1,6 @@
 """
 UI Components Library
-Reusable premium UI components for the Shree Ganesha Silkmanagement system
+Reusable premium UI components for the Shree Ganesha Silk system
 """
 
 import customtkinter as ctk
@@ -438,13 +438,13 @@ class PageHeader(ctk.CTkFrame):
         super().__init__(parent, fg_color="transparent", **kwargs)
         
         # Title
-        title_label = ctk.CTkLabel(
+        self.title_label = ctk.CTkLabel(
             self,
             text=title,
             font=ctk.CTkFont(size=config.FONT_SIZE_HEADING_1, weight="bold"),
             text_color=config.COLOR_TEXT_PRIMARY
         )
-        title_label.pack(side="left", anchor="w")
+        self.title_label.pack(side="left", anchor="w")
         
         # Clock
         self.clock_label = ctk.CTkLabel(
@@ -457,6 +457,10 @@ class PageHeader(ctk.CTkFrame):
         
         self._update_clock()
     
+    def set_title(self, title: str):
+        """Update header title"""
+        self.title_label.configure(text=title)
+        
     def _update_clock(self):
         """Update clock label"""
         now = datetime.now().strftime("%A, %d %b %Y | %H:%M:%S")

@@ -13,23 +13,26 @@ from tkcalendar import DateEntry
 class NewStockModule(ctk.CTkFrame):
     """Purchase Management / Manage Receiving"""
     
-    def __init__(self, parent, db_manager, **kwargs):
+    def __init__(self, parent, db_manager, purchase_invoice_generator, purchase_id=None, **kwargs):
         super().__init__(parent, fg_color="transparent", **kwargs)
         
         self.db = db_manager
+        self.purchase_invoice_gen = purchase_invoice_generator
         self.cart = [] 
         self.mode = "RECEIVE" # RECEIVE or RETURN
+        self.editing_purchase_id = purchase_id
+        self.prefill_item_id = kwargs.get("prefill_item_id", None)
         
         # Apply Base Font Size
         try:
-            base_size = int(self.db.get_setting("base_font_size") or 12)
+            self.base_size = int(self.db.get_setting("base_font_size") or 12)
         except:
-            base_size = 12
+            self.base_size = 12
             
-        self.font_sm = max(base_size - 2, 8)
-        self.font_md = max(base_size - 1, 9)
-        self.font_lg = base_size
-        self.font_xl = max(base_size + 2, 12)
+        self.font_sm = max(self.base_size - 2, 8)
+        self.font_md = max(self.base_size - 1, 9)
+        self.font_lg = self.base_size
+        self.font_xl = max(self.base_size + 2, 12)
         
         # Header
         self.header = PageHeader(self, title="📦 Manage Receiving (Purchase)")
@@ -53,6 +56,79 @@ class NewStockModule(ctk.CTkFrame):
         
         # 5. Footer Actions
         self._setup_footer()
+        
+        if self.editing_purchase_id:
+            self.after(100, self._load_purchase_for_editing)
+        elif self.prefill_item_id:
+            self.after(200, self._prefill_from_item_id)
+            
+    def _prefill_from_item_id(self):
+        try:
+            res = self.db.execute_query(
+                "SELECT barcode FROM inventory WHERE item_id = ?",
+                (self.prefill_item_id,)
+            )
+            if res and res[0][0]:
+                self.entry_vars['barcode'].delete(0, 'end')
+                self.entry_vars['barcode'].insert(0, res[0][0])
+                self._on_barcode_enter(None) # Simulate pressing enter
+        except Exception as e:
+            print("Prefill error:", e)
+            
+    def _load_purchase_for_editing(self):
+        try:
+            p_data = self.db.execute_query(
+                "SELECT supplier_id, invoice_number, total_amount, gst_amount, other_expenses, agent_name, transport, lr_no, bill_date FROM purchases WHERE purchase_id = ?",
+                (self.editing_purchase_id,)
+            )
+            if not p_data: return
+            s_id, inv_no, t_amt, gst_amt, exp, agent, transp, lr, b_date = p_data[0]
+            
+            s_name_res = self.db.execute_query("SELECT name FROM suppliers WHERE supplier_id = ?", (s_id,))
+            if s_name_res: self.party_combo.set(s_name_res[0][0])
+            
+            self.bill_no_entry.delete(0, 'end'); self.bill_no_entry.insert(0, inv_no)
+            if b_date:
+                try: self.bill_date_entry.set_date(datetime.strptime(b_date[:10], '%Y-%m-%d'))
+                except: pass
+            
+            self.gst_entry.delete(0, 'end'); self.gst_entry.insert(0, str(gst_amt))
+            self.expenses_entry.delete(0, 'end'); self.expenses_entry.insert(0, str(exp))
+            if agent: self.agent_combo.set(agent)
+            if transp: self.transport_entry.delete(0, 'end'); self.transport_entry.insert(0, transp)
+            if lr: self.lr_no_entry.delete(0, 'end'); self.lr_no_entry.insert(0, lr)
+            
+            self.save_btn.configure(text="💾 Update Purchase [F10]", fg_color=config.COLOR_WARNING)
+            
+            try:
+                items = self.db.execute_query(
+                    "SELECT item_id, sku_code, item_name, quantity, purchase_rate, sale_rate, total_amount, brand, gst_percentage, hsn_code FROM purchase_items WHERE purchase_id = ?",
+                    (self.editing_purchase_id,)
+                )
+            except:
+                items = self.db.execute_query(
+                    "SELECT item_id, sku_code, item_name, quantity, purchase_rate, sale_rate, total_amount, brand, gst_percentage, '' as hsn_code FROM purchase_items WHERE purchase_id = ?",
+                    (self.editing_purchase_id,)
+                )
+            
+            for it in items:
+                i_id, sku, name, qty, p_rate, s_rate, t_amt, brand, gst_pct, hsn = it
+                barcode = ""
+                inv_res = self.db.execute_query("SELECT barcode, category FROM inventory WHERE item_id = ?", (i_id,))
+                cat = "Saree"
+                if inv_res: 
+                    barcode = inv_res[0][0]
+                    cat = inv_res[0][1]
+                    
+                self.cart.append({
+                    "sku": sku, "barcode": barcode, "name": name, "hsn_code": hsn or "", "brand": brand, "gst_pct": gst_pct or 0,
+                    "qty": qty, "pur_rate": p_rate, "pur_rate_w_gst": t_amt / qty if qty > 0 else p_rate,
+                    "sale_rate": s_rate, "total": t_amt, 
+                    "gst_amount": t_amt - (qty * p_rate), "mode": "RECEIVE", "category": cat
+                })
+            self._refresh_grid()
+        except Exception as e:
+            print("Error loading purchase items:", e)
         
     def _setup_header_form(self):
         """Top row: Party Name, Supplier Name, Agent Name"""
@@ -130,8 +206,8 @@ class NewStockModule(ctk.CTkFrame):
         cw = ctk.CTkFrame(card, fg_color="transparent")
         cw.pack(fill="x", padx=5, pady=5)
         
-        # Fields: SKU, Barcode, Item Name, Brand, Unit, Pur Rate, Sale Rate, Qty
-        fields = ["SKU (Auto)", "Barcode*", "Item Name*", "Brand", "GST %*", "Pur.Rate*", "Sale Rate*", "Qty*"]
+        # Fields: SKU, Barcode, Item Name, HSN, Brand, Pur Rate, GST, Sale Rate, Qty
+        fields = ["SKU (Auto)", "Barcode*", "Item Name*", "HSN*", "Brand", "Pur.Rate*", "GST %*", "Sale Rate*", "Qty*"]
         self.entry_vars = {}
         
         for i, f in enumerate(fields):
@@ -170,14 +246,14 @@ class NewStockModule(ctk.CTkFrame):
         
         # Configure Treeview Style
         style = ttk.Style()
-        row_height = max(int(self.font_md * 2.5), 20)
+        row_height = max(int(self.base_size * 2.5), 20)
         style.theme_use('default')
-        style.configure("NewStock.Treeview", background="white", foreground="black", rowheight=row_height, fieldbackground="white", font=("Arial", self.font_md), borderwidth=0)
-        style.configure("NewStock.Treeview.Heading", background=config.COLOR_PRIMARY, foreground="white", font=("Arial", max(self.font_md, 12), "bold"), relief="flat")
+        style.configure("NewStock.Treeview", background="white", foreground="black", rowheight=row_height, fieldbackground="white", font=("Arial", self.base_size), borderwidth=0)
+        style.configure("NewStock.Treeview.Heading", background=config.COLOR_PRIMARY, foreground="white", font=("Arial", self.base_size, "bold"), relief="flat")
         style.map("NewStock.Treeview.Heading", background=[('active', config.COLOR_PRIMARY_DARK)])
         style.map("NewStock.Treeview", background=[('selected', '#B4D5F0')])
         
-        self.columns = ("sku", "barcode", "category", "brand", "name", "gst_pct", "pur_rate", "sale_rate", "qty", "total")
+        self.columns = ("sku", "barcode", "category", "hsn", "brand", "name", "pur_rate", "gst_pct", "pur_rate_gst", "sale_rate", "qty", "total")
         self.tree = ttk.Treeview(self.grid_frame, columns=self.columns, show="headings", style="NewStock.Treeview", height=8)
         
         vsb = ttk.Scrollbar(self.grid_frame, orient="vertical", command=self.tree.yview)
@@ -187,16 +263,18 @@ class NewStockModule(ctk.CTkFrame):
         vsb.pack(side="right", fill="y")
         
         headings = [
-            ("sku", "SKU", 80),
-            ("barcode", "Barcode", 120),
-            ("category", "Category", 100),
-            ("brand", "Brand", 100),
-            ("name", "Item Name", 250),
+            ("sku", "SKU", 60),
+            ("barcode", "Barcode", 100),
+            ("category", "Category", 80),
+            ("hsn", "HSN", 70),
+            ("brand", "Brand", 90),
+            ("name", "Item Name", 230),
+            ("pur_rate", "Pur.Rate", 80),
             ("gst_pct", "GST %", 60),
-            ("pur_rate", "Pur.Rate", 90),
-            ("sale_rate", "Sale Rate", 90),
-            ("qty", "Qty", 70),
-            ("total", "Total", 100)
+            ("pur_rate_gst", "Rate(w/GST)", 90),
+            ("sale_rate", "Sale Rate", 80),
+            ("qty", "Qty", 60),
+            ("total", "Total", 90)
         ]
         
         for col, text, width in headings:
@@ -205,9 +283,73 @@ class NewStockModule(ctk.CTkFrame):
             
         self.tree.bind("<Delete>", lambda e: self._delete_selected_item())
         self.tree.bind("<BackSpace>", lambda e: self._delete_selected_item())
+        self.tree.bind("<Double-1>", self._on_grid_double_click)
         
         # Action Instruction
-        ctk.CTkLabel(self.content_scroll, text="Tip: Select an row and press Delete or Backspace to remove it", font=("Arial", self.font_sm), text_color="gray").pack(anchor="e", padx=20)
+        ctk.CTkLabel(self.content_scroll, text="Tip: Double-click a cell to quick-edit. Press Delete or Backspace to remove row.", font=("Arial", self.font_sm), text_color="gray").pack(anchor="e", padx=20)
+        
+    def _on_grid_double_click(self, event):
+        """Runtime Editable Cell in New Stock Grid"""
+        region = self.tree.identify("region", event.x, event.y)
+        if region != "cell": return
+        
+        column = self.tree.identify_column(event.x)
+        row_id = self.tree.identify_row(event.y)
+        if not row_id: return
+        
+        col_idx = int(column[1:]) - 1
+        col_name = self.columns[col_idx]
+        
+        editable_cols = {
+            "name": "name", "category": "category", "brand": "brand",
+            "qty": "qty", "pur_rate": "pur_rate", "sale_rate": "sale_rate", 
+            "gst_pct": "gst_pct", "hsn": "hsn_code"
+        }
+        if col_name not in editable_cols: return
+        
+        row_index = self.tree.index(row_id)
+        item = self.cart[row_index]
+        
+        x, y, w, h = self.tree.bbox(row_id, column)
+        import tkinter.ttk as ttk
+        edit_entry = ttk.Entry(self.tree, font=("Arial", self.base_size))
+        edit_entry.place(x=x, y=y, width=w, height=h)
+        
+        current_val = item.get(editable_cols[col_name], "")
+        if col_name == "qty":
+            current_val = int(current_val)
+        edit_entry.insert(0, str(current_val))
+        edit_entry.focus_set()
+        edit_entry.select_range(0, 'end')
+        
+        def save_edit(event=None):
+            val = edit_entry.get().strip()
+            try:
+                field = editable_cols[col_name]
+                if field in ("hsn_code", "name", "category", "brand"):
+                    item[field] = val
+                else:
+                    item[field] = float(val) if val else 0.0
+                    
+                # Recalculate totals inline
+                if field in ("pur_rate", "gst_pct", "qty"):
+                    rate = item.get("pur_rate", 0.0)
+                    qty = item.get("qty", 1)
+                    gst_pct = item.get("gst_pct", 0.0)
+                    gst_amt_per = rate * (gst_pct / 100)
+                    pur_w_gst = rate + gst_amt_per
+                    item["pur_rate_w_gst"] = pur_w_gst
+                    item["total"] = pur_w_gst * qty
+                    item["gst_amount"] = gst_amt_per * qty
+                    
+                self._refresh_grid()
+            except ValueError:
+                pass
+            edit_entry.destroy()
+            
+        edit_entry.bind("<Return>", save_edit)
+        edit_entry.bind("<FocusOut>", save_edit)
+        edit_entry.bind("<Escape>", lambda e: edit_entry.destroy())
         
     def _setup_footer(self):
         """Footer Actions"""
@@ -228,9 +370,12 @@ class NewStockModule(ctk.CTkFrame):
         self.expenses_entry.pack(side="left", padx=5)
         
         # Totals
-        self.total_label = ctk.CTkLabel(footer, text="Total Qty: 0 | Total Amount: ₹0.00", 
+        self.total_label = ctk.CTkLabel(footer, text="Total Items 0 Total Qty 0", 
                                        font=("Arial", self.font_xl, "bold"), text_color=config.COLOR_PRIMARY)
         self.total_label.pack(side="left", padx=20)
+        self.total_amount_label = ctk.CTkLabel(footer, text="Total Amount: ₹0.00", 
+                                       font=("Arial", self.font_xl, "bold"), text_color=config.COLOR_PRIMARY)
+        self.total_amount_label.pack(side="left", padx=20)
         
         # Buttons
         ctk.CTkButton(footer, text="Esc Close", fg_color="transparent", border_width=1, 
@@ -314,14 +459,21 @@ class NewStockModule(ctk.CTkFrame):
                 messagebox.showwarning("Already Available", f"Barcode {barcode} is already in the cart!")
                 return
         
-        res = self.db.execute_query("""
-            SELECT saree_type, purchase_price, selling_price, brand, gst_percentage 
-            FROM inventory WHERE barcode = ?
-        """, (barcode,))
-        
+        try:
+            res = self.db.execute_query("""
+                SELECT saree_type, hsn_code, purchase_price, selling_price, brand, gst_percentage 
+                FROM inventory WHERE barcode = ?
+            """, (barcode,))
+        except:
+            res = self.db.execute_query("""
+                SELECT saree_type, '' as hsn_code, purchase_price, selling_price, brand, gst_percentage 
+                FROM inventory WHERE barcode = ?
+            """, (barcode,))
+            
         if res:
-            name, pur, sale, brand, gst_pct = res[0]
+            name, hsn, pur, sale, brand, gst_pct = res[0]
             self.entry_vars['item_name'].delete(0, "end"); self.entry_vars['item_name'].insert(0, name)
+            if hsn: self.entry_vars['hsn'].delete(0, "end"); self.entry_vars['hsn'].insert(0, hsn)
             self.entry_vars['pur_rate'].delete(0, "end"); self.entry_vars['pur_rate'].insert(0, str(pur))
             self.entry_vars['sale_rate'].delete(0, "end"); self.entry_vars['sale_rate'].insert(0, str(sale))
             if brand: 
@@ -342,6 +494,7 @@ class NewStockModule(ctk.CTkFrame):
             rate = float(self.entry_vars['pur_rate'].get() or 0)
             sale = float(self.entry_vars['sale_rate'].get() or 0)
             brand = self.entry_vars['brand'].get().strip()
+            hsn = self.entry_vars['hsn'].get().strip()
             try:
                 gst_pct = float(self.entry_vars['gst_%'].get() or 0)
             except ValueError:
@@ -349,6 +502,10 @@ class NewStockModule(ctk.CTkFrame):
             
             if not barcode or not name or qty <= 0:
                 messagebox.showerror("Error", "Barcode, Name and Qty required")
+                return
+                
+            if gst_pct > 0 and not hsn:
+                messagebox.showerror("Validation Error", "HSN Code is required when GST > 0%")
                 return
             
             # Prevent duplicate barcode in database
@@ -363,23 +520,30 @@ class NewStockModule(ctk.CTkFrame):
                         messagebox.showwarning("Already Available", f"Barcode '{barcode}' is already in the cart!")
                         return
             
-            base_total = qty * rate
-            total = base_total * (1 + (gst_pct / 100))
+            # Smart GST Calculation exactly like Billing
+            gst_amount_per_unit = rate * (gst_pct / 100)
+            pur_rate_w_gst = rate + gst_amount_per_unit
+            
+            total = pur_rate_w_gst * qty
+            total_gst_for_row = gst_amount_per_unit * qty
             
             item = {
-                "sku": sku, "barcode": barcode, "name": name, "brand": brand, "gst_pct": gst_pct,
-                "qty": qty, "rate": rate, "sale": sale, "total": total,
+                "sku": sku, "barcode": barcode, "name": name, "hsn_code": hsn, "brand": brand, "gst_pct": gst_pct,
+                "qty": qty, "pur_rate": rate, "pur_rate_w_gst": pur_rate_w_gst, "sale_rate": sale, 
+                "total": total, "gst_amount": total_gst_for_row,
                 "mode": self.mode, "category": self.cat_filter.get()
             }
             self.cart.append(item)
             self._refresh_grid()
             
             # Clear critical fields and pre-fill next expected SKU
+            # We DONT clear GST and HSN here so it retains values for consecutive entries
             self.entry_vars['barcode'].delete(0, "end")
             self.entry_vars['item_name'].delete(0, "end")
             self.entry_vars['qty'].delete(0, "end")
-            if 'gst_%' in self.entry_vars:
-                self.entry_vars['gst_%'].delete(0, "end")
+            self.entry_vars['pur_rate'].delete(0, "end")
+            self.entry_vars['sale_rate'].delete(0, "end")
+            self.entry_vars['brand'].delete(0, "end")
             self._prefill_next_sku()
             self.entry_vars['barcode'].focus_set()
             
@@ -392,23 +556,37 @@ class NewStockModule(ctk.CTkFrame):
             
         ttl_qty = 0
         ttl_amt = 0
+        ttl_gst = 0
         
         for idx, item in enumerate(self.cart):
             q_val = item['qty'] if item['mode'] == 'RECEIVE' else -item['qty']
             t_val = item['total'] if item['mode'] == 'RECEIVE' else -item['total']
+            g_val = item['gst_amount'] if item.get('mode', 'RECEIVE') == 'RECEIVE' else -item['gst_amount']
             
             ttl_qty += q_val
             ttl_amt += t_val
+            ttl_gst += g_val
             
-            vals = (item['sku'], item['barcode'], item['category'], item['brand'], item['name'], f"{item['gst_pct']}%", 
-                    f"{item['rate']:.2f}", f"{item['sale']:.2f}", str(q_val), f"{t_val:.2f}")
+            # Fallback for old items loaded without pur_rate_w_gst
+            pur_w_gst = item.get('pur_rate_w_gst', item['pur_rate'] + (item['pur_rate'] * item['gst_pct'] / 100))
+            
+            vals = (item['sku'], item['barcode'], item['category'], item.get('hsn_code', ''), item['brand'], item['name'], 
+                    f"{item['pur_rate']:.2f}", f"{item['gst_pct']}%", f"{pur_w_gst:.2f}", 
+                    f"{item['sale_rate']:.2f}", str(q_val), f"{t_val:.2f}")
+            
             
             tags = ('return',) if item['mode'] == 'RETURN' else ()
             self.tree.insert("", "end", values=vals, tags=tags)
             
         self.tree.tag_configure('return', background="#fee2e2")
         
-        self.total_label.configure(text=f"Total Qty: {ttl_qty} | Total Amount: ₹{ttl_amt:,.2f}")
+        total_items_count = len(self.cart)
+        self.total_label.configure(text=f"Total Items {total_items_count} Total Qty {int(ttl_qty)}")
+        self.total_amount_label.configure(text=f"Total Amount: ₹{ttl_amt:,.2f}")
+        
+        # Auto-update GST Footer
+        self.gst_entry.delete(0, "end")
+        self.gst_entry.insert(0, f"{ttl_gst:.2f}")
 
     def _delete_selected_item(self):
         sel = self.tree.selection()
@@ -460,14 +638,35 @@ class NewStockModule(ctk.CTkFrame):
             except:
                 db_bill_date = raw_date
 
-            pid = self.db.execute_insert(
-                """INSERT INTO purchases (supplier_id, invoice_number, total_amount, 
-                   gst_amount, other_expenses, agent_name, transport, lr_no, bill_date) 
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (sup_id, bill_no, net_amt, gst_val, exp_val, self.agent_combo.get(), 
-                 self.transport_entry.get(), self.lr_no_entry.get(), db_bill_date),
-                 cursor=cursor
-            )
+            if hasattr(self, 'editing_purchase_id') and self.editing_purchase_id:
+                pid = self.editing_purchase_id
+                
+                # Revert old inventory
+                old_items = self.db.execute_query("SELECT item_id, quantity FROM purchase_items WHERE purchase_id = ?", (pid,), cursor=cursor)
+                if old_items:
+                    for item_id, qty in old_items:
+                        self.db.execute_query("UPDATE inventory SET quantity = quantity - ? WHERE item_id = ?", (qty, item_id), cursor=cursor)
+                
+                # Delete old items
+                self.db.execute_query("DELETE FROM purchase_items WHERE purchase_id = ?", (pid,), cursor=cursor)
+                
+                self.db.execute_query(
+                    """UPDATE purchases SET supplier_id=?, invoice_number=?, total_amount=?, 
+                       gst_amount=?, other_expenses=?, agent_name=?, transport=?, lr_no=?, bill_date=? 
+                       WHERE purchase_id=?""",
+                    (sup_id, bill_no, net_amt, gst_val, exp_val, self.agent_combo.get(), 
+                     self.transport_entry.get(), self.lr_no_entry.get(), db_bill_date, pid),
+                     cursor=cursor
+                )
+            else:
+                pid = self.db.execute_insert(
+                    """INSERT INTO purchases (supplier_id, invoice_number, total_amount, 
+                       gst_amount, other_expenses, agent_name, transport, lr_no, bill_date) 
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (sup_id, bill_no, net_amt, gst_val, exp_val, self.agent_combo.get(), 
+                     self.transport_entry.get(), self.lr_no_entry.get(), db_bill_date),
+                     cursor=cursor
+                )
             
             # 3. Items
             for item in self.cart:
@@ -477,9 +676,9 @@ class NewStockModule(ctk.CTkFrame):
                     iid = res[0][0]
                     self.db.execute_query(
                         """UPDATE inventory SET saree_type=?, purchase_price=?, selling_price=?, 
-                           brand=?, gst_percentage=?, category=?, supplier_name=?, sku_code=? WHERE item_id=?""",
-                        (item['name'], item['rate'], item['sale'], item['brand'], item['gst_pct'], 
-                         item['category'], party, item['sku'], iid),
+                           brand=?, gst_percentage=?, hsn_code=?, category=?, supplier_name=?, sku_code=? WHERE item_id=?""",
+                        (item['name'], item['pur_rate'], item['sale_rate'], item['brand'], item['gst_pct'], 
+                         item.get('hsn_code', ''), item['category'], party, item['sku'], iid),
                         cursor=cursor
                     )
                 else:
@@ -487,10 +686,10 @@ class NewStockModule(ctk.CTkFrame):
                     iid = self.db.execute_insert(
                         """INSERT INTO inventory (sku_code, barcode, saree_type, quantity, purchase_price, 
                            selling_price, brand, gst_percentage, category, supplier_name,
-                           material, color, design)
-                           VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (item['sku'], item['barcode'], item['name'], item['rate'], item['sale'], 
-                         item['brand'], item['gst_pct'], item['category'], party,
+                           hsn_code, material, color, design)
+                           VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (item['sku'], item['barcode'], item['name'], item['pur_rate'], item['sale_rate'], 
+                         item['brand'], item['gst_pct'], item['category'], party, item.get('hsn_code', ''),
                          "N/A", "N/A", "N/A"), # Defaults
                         cursor=cursor
                     )
@@ -505,20 +704,41 @@ class NewStockModule(ctk.CTkFrame):
                 # Purchase Item Record
                 self.db.execute_insert(
                     """INSERT INTO purchase_items (purchase_id, item_id, sku_code, item_name, 
-                       quantity, purchase_rate, sale_rate, total_amount, brand, gst_percentage)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (pid, iid, item['sku'], item['name'], item['qty'], item['rate'], 
-                     item['sale'], item['total'], item['brand'], item['gst_pct']),
+                       quantity, purchase_rate, sale_rate, total_amount, brand, gst_percentage, hsn_code)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (pid, iid, item['sku'], item['name'], item['qty'], item['pur_rate'], 
+                     item['sale_rate'], item['total'], item['brand'], item['gst_pct'], item.get('hsn_code', '')),
                     cursor=cursor
                 )
                 
                 # History
                 note = f"Ref: {bill_no} ({'GRN' if item['mode']=='RECEIVE' else 'RET'})"
-                self.db.add_stock_entry(iid, qty_change, item['rate'], party, note, cursor=cursor)
+                self.db.add_stock_entry(iid, qty_change, item['pur_rate'], party, note, cursor=cursor)
             
             conn.commit() # Commit all changes only if everything succeeded
             
-            messagebox.showinfo("Success", "Saved Successfully!")
+            # Generate purchase invoice
+            try:
+                invoice_path = self.purchase_invoice_gen.generate_purchase_invoice(pid)
+                invoice_generated = True
+            except Exception as pdf_error:
+                invoice_generated = False
+                invoice_path = None
+                print("PDF Error:", pdf_error)
+
+            if invoice_generated:
+                if messagebox.askyesno("Success", "Saved Successfully!\n\nWould you like to print the purchase invoice?"):
+                    try:
+                        import os
+                        os.startfile(invoice_path)
+                    except:
+                        try:
+                            import subprocess
+                            subprocess.Popen(['start', '', invoice_path], shell=True)
+                        except: pass
+            else:
+                messagebox.showinfo("Success", "Saved Successfully!")
+            
             self.cart = []
             self._refresh_grid()
             self.bill_no_entry.delete(0, "end")
