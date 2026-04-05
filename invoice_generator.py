@@ -67,13 +67,13 @@ class InvoiceGenerator:
         sale_data = self.db.execute_query(
             """SELECT bill_number, customer_name, customer_phone, total_amount,
                discount_percent, discount_amount, gst_amount, final_amount,
-               payment_method, sale_date, amount_paid, balance_due FROM sales WHERE sale_id = ?""",
+               payment_method, sale_date, amount_paid, balance_due, salesman FROM sales WHERE sale_id = ?""",
             (sale_id,)
         )[0]
 
         # Get sale items
         items_data = self.db.execute_query(
-            """SELECT sku_code, item_name, quantity, unit_price, total_price
+            """SELECT sku_code, item_name, quantity, unit_price, total_price, mrp
                FROM sale_items WHERE sale_id = ?""",
             (sale_id,)
         )
@@ -96,7 +96,8 @@ class InvoiceGenerator:
             "gst_amount": sale_data[6],
             "grand_total": sale_data[7],
             "amount_paid": sale_data[10],
-            "balance_due": sale_data[11]
+            "balance_due": sale_data[11],
+            "salesman": sale_data[12] or ""
         }
 
         items = []
@@ -110,6 +111,7 @@ class InvoiceGenerator:
                 "name": item_name,
                 "qty": item[2],
                 "rate": item[3],
+                "mrp": item[5] or item[3], # Fallback to rate if MRP null
                 "amount": item[4]
             })
             
@@ -241,7 +243,6 @@ class InvoiceGenerator:
         story.append(Spacer(1, 2 * inch))
 
         # Customer Name Section
-        # Using a table to create the "Name: ____________" line with correct styling
         name_style = ParagraphStyle('NameStyle', parent=styles['Normal'], fontName=FONT_BOLD, fontSize=11, textColor=PURPLE_COLOR)
         customer_name_paragraph = Paragraph(f"{data['customer_name']}", styles['Normal'])
         
@@ -250,19 +251,33 @@ class InvoiceGenerator:
         ]
         name_table = Table(name_data, colWidths=[0.8 * inch, 6.4 * inch])
         name_table.setStyle(TableStyle([
-            ('LINEBELOW', (1, 0), (1, 0), 1, PURPLE_COLOR), # Underline for the name part
+            ('LINEBELOW', (1, 0), (1, 0), 1, PURPLE_COLOR),
             ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
         ]))
         story.append(name_table)
+        story.append(Spacer(1, 0.1 * inch))
+
+        # Bill Info Section (Bill No, Date, Salesman)
+        label_style = ParagraphStyle('LabelStyle', parent=styles['Normal'], fontName=FONT_BOLD, fontSize=10)
+        value_style = ParagraphStyle('ValueStyle', parent=styles['Normal'], fontSize=10)
+        
+        info_data = [
+            [Paragraph(f"<b>Salesman:</b> {data['salesman']}", label_style) if data.get('salesman') else ""]
+        ]
+        info_table = Table(info_data, colWidths=[7.2 * inch])
+        info_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]))
+        story.append(info_table)
         story.append(Spacer(1, 0.2 * inch))
 
         # --- Main Items and Totals Table ---
         # Define column widths based on the template image
-        col_widths = [0.6 * inch, 3 * inch, 1 * inch, 0.7 * inch, 1 * inch, 1.2 * inch]
+        col_widths = [0.6 * inch, 2.5 * inch, 0.9 * inch, 0.6 * inch, 0.9 * inch, 0.9 * inch, 0.8 * inch]
 
         # Table Header
         table_data = [
-            ["Sr. No.", "Particulars", "SKU", "Qty", "Rate", "Amount"]
+            ["Sr. No.", "Particulars", "SKU", "Qty", "MRP", "Rate", "Amount"]
         ]
 
         # Fill with Item Data
@@ -274,6 +289,7 @@ class InvoiceGenerator:
                 item["name"],
                 item["sku"] or "", # Display SKU
                 str(item["qty"]),
+                f"{item['mrp']:.2f}",
                 f"{item['rate']:.2f}",
                 f"{item['amount']:.2f}"
             ])
@@ -281,7 +297,7 @@ class InvoiceGenerator:
         # Add empty rows to fill space
         rows_to_add = max(0, MIN_ROWS - len(items))
         for _ in range(rows_to_add):
-            table_data.append(["", "", "", "", "", ""])
+            table_data.append(["", "", "", "", "", "", ""])
 
         total_qty = sum(item["qty"] for item in items)
         total_distinct_items = len(items)
@@ -316,7 +332,7 @@ class InvoiceGenerator:
                 val_str = str(int(val))
             else:
                 val_str = f"{val:.2f}"
-            table_data.append(["", "", "", "", label, val_str])
+            table_data.append(["", "", "", "", "", label, val_str])
             
         main_table = Table(table_data, colWidths=col_widths, repeatRows=1)
 
@@ -346,11 +362,11 @@ class InvoiceGenerator:
         for i in range(1, num_totals + 1):
             row_idx = -i
             style_cmds.extend([
-                ('SPAN', (0, row_idx), (3, row_idx)),
-                ('BACKGROUND', (4, row_idx), (4, row_idx), PURPLE_COLOR),
-                ('TEXTCOLOR', (4, row_idx), (4, row_idx), colors.white),
-                ('FONTNAME', (4, row_idx), (4, row_idx), FONT_BOLD),
-                ('ALIGN', (4, row_idx), (4, row_idx), 'CENTER'),
+                ('SPAN', (0, row_idx), (4, row_idx)),
+                ('BACKGROUND', (5, row_idx), (5, row_idx), PURPLE_COLOR),
+                ('TEXTCOLOR', (5, row_idx), (5, row_idx), colors.white),
+                ('FONTNAME', (5, row_idx), (5, row_idx), FONT_BOLD),
+                ('ALIGN', (5, row_idx), (5, row_idx), 'CENTER'),
                 ('ALIGN', (-1, row_idx), (-1, row_idx), 'RIGHT'),
                 ('FONTNAME', (-1, row_idx), (-1, row_idx), FONT_BOLD),
             ])

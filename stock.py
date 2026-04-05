@@ -6,7 +6,6 @@ View, edit, and manage inventory with premium light theme
 import customtkinter as ctk
 from tkinter import messagebox
 import config
-import config
 from ui_components import AnimatedButton, SearchBar, PageHeader
 
 
@@ -145,9 +144,27 @@ class StockManagementModule(ctk.CTkFrame):
         return self.tree.item(sel[0])['values'][0] # item_id
 
     def _edit_selected(self):
+        """Redirect to New Stock — open the last purchase that included this item for editing.
+        If no purchase record exists, open New Stock pre-filled with this item barcode."""
         item_id = self._get_selected_item()
-        if item_id:
-            self._edit_item(item_id)
+        if not item_id:
+            return
+        if not self.on_add_stock:
+            messagebox.showerror("Error", "Redirection to New Stock failed.")
+            return
+        # Find the latest purchase that contained this item
+        res = self.db.execute_query(
+            """SELECT pi.purchase_id FROM purchase_items pi
+               WHERE pi.item_id = ?
+               ORDER BY pi.purchase_item_id DESC LIMIT 1""",
+            (item_id,)
+        )
+        if res and res[0][0]:
+            # Open that purchase in New Stock for editing
+            self.on_add_stock(item_id=item_id, purchase_id=res[0][0])
+        else:
+            # No purchase record — open New Stock pre-filled with barcode
+            self.on_add_stock(item_id=item_id, purchase_id=None)
 
     def _history_selected(self):
         item_id = self._get_selected_item()
@@ -181,11 +198,16 @@ class StockManagementModule(ctk.CTkFrame):
         ).pack(side="left")
         
         # Add Entry Button
+        def _route_to_new_stock():
+            dialog.destroy()
+            if self.on_add_stock:
+                self.on_add_stock(item_id)
+                
         ctk.CTkButton(
             header,
-            text="+ Add Stock Entry",
+            text="+ Add Stock via Purchase",
             fg_color=config.COLOR_SUCCESS,
-            command=lambda: self._add_stock_entry_dialog(dialog, item_id, load_history)
+            command=_route_to_new_stock
         ).pack(side="right")
         
         # History Table Container
@@ -269,15 +291,15 @@ class StockManagementModule(ctk.CTkFrame):
                             old_qty_res = self.db.execute_query("SELECT quantity_added FROM stock_entries WHERE entry_id = ?", (entry_id,))
                             if old_qty_res:
                                 old_qty = old_qty_res[0][0]
-                                diff = int(val) - old_qty
+                                diff = int(float(str(val))) - old_qty
                                 self.db.execute_query("UPDATE inventory SET quantity = quantity + ? WHERE item_id = ?", (diff, item_id))
-                        val = val if db_field == "purchase_price" else int(val)
+                        val = val if db_field == "purchase_price" else int(float(str(val)))
                     
                     self.db.execute_query(f"UPDATE stock_entries SET {db_field} = ? WHERE entry_id = ?", (val, entry_id))
-                    self.db.conn.commit()
                     load_history()
                     self._load_stock()
-                except ValueError: pass
+                except ValueError:
+                    pass
                 edit_entry.destroy()
                 
             edit_entry.bind("<Return>", save_edit)
@@ -301,130 +323,8 @@ class StockManagementModule(ctk.CTkFrame):
         
         load_history()
 
-    def _add_stock_entry_dialog(self, parent, item_id, on_save_callback):
-        """Add new stock entry dialogue"""
-        d = ctk.CTkToplevel(parent)
-        d.title("Add Stock Entry")
-        d.geometry("400x500")
-        d.transient(parent)
-        d.grab_set()
-        
-        main_frame = ctk.CTkFrame(d, fg_color="transparent")
-        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
-        
-        item = self.db.execute_query("SELECT purchase_price, supplier_name FROM inventory WHERE item_id = ?", (item_id,))[0]
-        
-        ctk.CTkLabel(main_frame, text="Quantity to Add*", font=("Arial", 12, "bold")).pack(anchor="w")
-        qty_entry = ctk.CTkEntry(main_frame)
-        qty_entry.pack(fill="x", pady=(0, 15))
-        qty_entry.focus_set()
-        
-        ctk.CTkLabel(main_frame, text="Purchase Price (₹)*", font=("Arial", 12, "bold")).pack(anchor="w")
-        price_entry = ctk.CTkEntry(main_frame)
-        price_entry.insert(0, str(item[0]))
-        price_entry.pack(fill="x", pady=(0, 15))
-        
-        ctk.CTkLabel(main_frame, text="Supplier Name", font=("Arial", 12, "bold")).pack(anchor="w")
-        supplier_entry = ctk.CTkEntry(main_frame)
-        if item[1]: supplier_entry.insert(0, item[1])
-        supplier_entry.pack(fill="x", pady=(0, 15))
-        
-        ctk.CTkLabel(main_frame, text="Note / Batch No", font=("Arial", 12, "bold")).pack(anchor="w")
-        note_entry = ctk.CTkEntry(main_frame)
-        note_entry.pack(fill="x", pady=(0, 20))
-        
-        def save():
-            try:
-                qty = int(qty_entry.get())
-                price = float(price_entry.get())
-                supplier = supplier_entry.get().strip()
-                note = note_entry.get().strip()
-                
-                if qty == 0: raise ValueError("Quantity cannot be 0")
-                
-                self.db.add_stock_entry(item_id, qty, price, supplier, note)
-                messagebox.showinfo("Success", "Stock updated successfully", parent=d)
-                d.destroy()
-                on_save_callback()
-                self._load_stock()
-            except ValueError as e:
-                messagebox.showerror("Error", str(e), parent=d)
-                
-        ctk.CTkButton(main_frame, text="Save Entry", fg_color=config.COLOR_SUCCESS, command=save).pack(fill="x", pady=10)
 
-    def _edit_item(self, item_id):
-        """Edit stock item"""
-        # Get item details
-        item = self.db.execute_query(
-            "SELECT * FROM inventory WHERE item_id = ?",
-            (item_id,)
-        )[0]
-        
-        # Create edit dialog
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("Edit Stock Item")
-        dialog.geometry("500x650")
-        dialog.transient(self.winfo_toplevel())
-        dialog.grab_set()
-        
-        # Main frame
-        main_frame = ctk.CTkScrollableFrame(dialog, fg_color=config.COLOR_BG_CARD)
-        main_frame.pack(fill="both", expand=True, padx=config.SPACING_LG, pady=config.SPACING_LG)
-        
-        # Fields
-        fields = [
-            ("SKU Code", item[1]),
-            ("Barcode", item[13] if len(item) > 13 else ""),
-            ("Item Name", item[2]),
-            ("GST %", str(item[16]) if len(item) > 16 else "0.0"),
-            ("Quantity", str(item[6])),
-            ("Purchase Price", str(item[7])),
-            ("Selling Price", str(item[8])),
-            ("Supplier", item[9] or "")
-        ]
-        
-        entries = {}
-        for label, value in fields:
-            ctk.CTkLabel(
-                main_frame,
-                text=label,
-                font=ctk.CTkFont(size=config.FONT_SIZE_SMALL, weight="bold"),
-                text_color=config.COLOR_TEXT_PRIMARY
-            ).pack(pady=(config.SPACING_SM, 2), anchor="w")
-            
-            entry = ctk.CTkEntry(main_frame, height=35)
-            entry.insert(0, value)
-            if label == "Quantity":
-                entry.configure(state="disabled") # Prevent direct edit of quantity, force use of history
-                ctk.CTkLabel(main_frame, text="To change quantity, use History > Add Stock", text_color="gray").pack(anchor="w")
-            entry.pack(fill="x", pady=(0, config.SPACING_XS))
-            entries[label] = entry
-        
-        def save_changes():
-            try:
-                self.db.execute_query(
-                    """UPDATE inventory SET sku_code=?, barcode=?, saree_type=?, gst_percentage=?, purchase_price=?, 
-                       selling_price=?, supplier_name=?, last_updated=CURRENT_TIMESTAMP
-                       WHERE item_id=?""",
-                    (entries["SKU Code"].get(), entries["Barcode"].get(), entries["Item Name"].get(),
-                     float(entries["GST %"].get() or 0.0),
-                     float(entries["Purchase Price"].get()),
-                     float(entries["Selling Price"].get()),
-                     entries["Supplier"].get(), item_id)
-                )
-                messagebox.showinfo("Success", "Item updated successfully")
-                dialog.destroy()
-                self._load_stock()
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to update: {str(e)}")
-        
-        AnimatedButton(
-            main_frame,
-            text="💾 Save Changes",
-            fg_color=config.COLOR_PRIMARY,
-            command=save_changes
-        ).pack(pady=config.SPACING_LG)
-    
+
     def _delete_item(self, item_id):
         """Delete stock item"""
         if messagebox.askyesno("Confirm Delete", "Are you sure you want to delete this item?"):

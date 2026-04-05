@@ -674,7 +674,15 @@ class BoutiqueManagementApp(ctk.CTk):
             ctk.CTkLabel(table_frame, text=sale[0], text_color=Config.COLOR_TEXT_LIGHT).grid(row=i, column=0, padx=10, pady=5, sticky="w")
             ctk.CTkLabel(table_frame, text=sale[1] or "Walk-in", text_color=Config.COLOR_TEXT_LIGHT).grid(row=i, column=1, padx=10, pady=5, sticky="w")
             ctk.CTkLabel(table_frame, text=f"₹{sale[2]:,.2f}", text_color=Config.COLOR_TEXT_LIGHT).grid(row=i, column=2, padx=10, pady=5, sticky="w")
-            ctk.CTkLabel(table_frame, text=sale[3][:16], text_color=Config.COLOR_TEXT_LIGHT).grid(row=i, column=3, padx=10, pady=5, sticky="w")
+            
+            # Format date to DD-MM-YYYY
+            formatted_date = sale[3]
+            try:
+                dt_obj = datetime.strptime(sale[3][:10], "%Y-%m-%d")
+                formatted_date = dt_obj.strftime("%d-%m-%Y")
+            except: pass
+            
+            ctk.CTkLabel(table_frame, text=formatted_date, text_color=Config.COLOR_TEXT_LIGHT).grid(row=i, column=3, padx=10, pady=5, sticky="w")
     
     def show_billing_screen(self):
         """Display billing interface"""

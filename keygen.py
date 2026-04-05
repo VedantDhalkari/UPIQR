@@ -21,25 +21,42 @@ def generate_commercial_license(client_hwid):
     return license_key
 
 if __name__ == "__main__":
-    print("=======================================")
-    print(" ENTERPRISE LICENSE GENERATOR ")
-    print("=======================================")
+    print("\n" + "="*50)
+    print("      🌟 SHREE GANESHA SILK - LICENSE GENERATOR 🌟")
+    print("="*50)
     
-    if len(sys.argv) < 2:
-        print("\n[ERROR] Missing Machine ID")
-        print("Usage: python keygen.py <CLIENT_MACHINE_ID>")
-        print("\nExample:")
-        print("python keygen.py ABCDE12345FGHIJ67890")
+    import os
+    
+    if len(sys.argv) > 1:
+        client_id = sys.argv[1]
+    else:
+        print("\n[PROMPT] Please enter the Client Machine ID (from activation screen):")
+        client_id = input(" > ").strip()
+        
+    if not client_id:
+        print("\n[ERROR] No Machine ID provided. Exiting.")
         sys.exit(1)
         
-    client_id = sys.argv[1]
     key = generate_commercial_license(client_id)
     
-    print(f"\nTarget Machine ID : {client_id}")
-    print("\n--- BEGIN LICENSE KEY ---")
+    print("\n" + "-"*50)
+    print(f" TARGET MACHINE : {client_id}")
+    print("-"*50)
+    print("\n🔑 GENERATED LICENSE KEY:\n")
     print(key)
-    print("--- END LICENSE KEY ---")
-    print("\nInstructions:")
-    print("Save the entire key string above into a file named 'license.key'")
-    print("and place it in the same directory as the executable on the client machine.")
-    print("=======================================\n")
+    print("\n" + "-"*50)
+    
+    # Also save to a file automatically for convenience
+    try:
+        with open("license.key", "w") as f:
+            f.write(key)
+        print(f"\n[SUCCESS] 'license.key' has been generated in: {os.getcwd()}")
+    except:
+        pass
+        
+    print("\nINSTRUCTIONS FOR CLIENT:")
+    print("1. Send the 'license.key' file to the client.")
+    print("2. Ask them to place it in the SAME FOLDER as the software.")
+    print("3. Restart the software.")
+    print("="*50 + "\n")
+

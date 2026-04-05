@@ -23,6 +23,16 @@ except ImportError:
 import customtkinter as ctk
 from tkinter import messagebox
 import config
+import os
+import logging
+
+# Setup Logging
+logging.basicConfig(
+    filename='debug.log',
+    level=logging.ERROR,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
 from database import DatabaseManager
 from invoice_generator import InvoiceGenerator
 from purchase_invoice_generator import PurchaseInvoiceGenerator
@@ -36,6 +46,8 @@ from new_stock import NewStockModule
 from search import GlobalSearchModule
 from reports import ReportsModule
 from settings import SettingsModule
+from supplier_module import SupplierMasterModule
+from salesman_module import SalesmanMasterModule
 
 
 class BoutiqueManagementApp(ctk.CTk):
@@ -121,8 +133,24 @@ class BoutiqueManagementApp(ctk.CTk):
         login_screen.pack(fill="both", expand=True)
     
     def _on_login_success(self, user: dict):
-        """Handle successful login"""
+        """Handle successful login — load permissions from DB"""
         self.current_user = user
+        # Load stored permissions for non-admin users
+        if user.get('role') != 'admin':
+            try:
+                import json
+                res = self.db.execute_query(
+                    "SELECT permissions FROM users WHERE user_id = ?",
+                    (user['id'],)
+                )
+                if res and res[0][0]:
+                    user['permissions'] = json.loads(res[0][0])
+                else:
+                    user['permissions'] = {}
+            except Exception:
+                user['permissions'] = {}
+        else:
+            user['permissions'] = {}  # Admin has all access — dict unused
         self.show_dashboard()
     
     def show_dashboard(self):
@@ -163,65 +191,104 @@ class BoutiqueManagementApp(ctk.CTk):
                         self.dashboard._navigate(self.dashboard.active_screen)
                     return
 
+        # --- Permission check for non-admin users ---
+        if screen not in ("logout", "dashboard", "calculator") and self.current_user:
+            if self.current_user.get('role') != 'admin':
+                perms = self.current_user.get('permissions', {})
+                # If perms explicitly says False for this screen, or if it's a restricted screen not mentioned as True
+                if not perms.get(screen, False):
+                    messagebox.showwarning(
+                        "Access Denied",
+                        f"You do not have permission to access '{screen}'.\n"
+                        "Please contact your administrator."
+                    )
+                    return
+
         # Clear current content
         for widget in self.dashboard.content_frame.winfo_children():
             widget.destroy()
             
-        if screen == "dashboard":
-            # Reload dashboard content
-            self.dashboard.load_dashboard_content()
-        elif screen == "billing":
-            BillingModule(
-                self.dashboard.content_frame,
-                db_manager=self.db,
-                invoice_generator=self.invoice_generator,
-                current_user=self.current_user,
-                **kwargs # Pass sale_id if present
-            ).pack(fill="both", expand=True)
-        elif screen == "purchases":
-            PurchaseManagementModule(
-                self.dashboard.content_frame,
-                db_manager=self.db,
-                invoice_generator=self.invoice_generator,
-                purchase_invoice_generator=self.purchase_invoice_generator,
-                on_edit_purchase=lambda pid: self.dashboard._navigate("new_stock", purchase_id=pid)
-            ).pack(fill="both", expand=True)
-        elif screen == "stock":
-            StockManagementModule(
-                self.dashboard.content_frame,
-                db_manager=self.db,
-                on_add_stock=lambda item_id: self.dashboard._navigate("new_stock", prefill_item_id=item_id)
-            ).pack(fill="both", expand=True)
-        elif screen == "new_stock":
-            NewStockModule(
-                self.dashboard.content_frame,
-                db_manager=self.db,
-                purchase_invoice_generator=self.purchase_invoice_generator,
-                **kwargs
-            ).pack(fill="both", expand=True)
-        elif screen == "search":
-            GlobalSearchModule(
-                self.dashboard.content_frame,
-                db_manager=self.db
-            ).pack(fill="both", expand=True)
-        elif screen == "reports":
-            ReportsModule(
-                self.dashboard.content_frame,
-                db_manager=self.db
-            ).pack(fill="both", expand=True)
-        elif screen == "settings":
-            SettingsModule(
-                self.dashboard.content_frame,
-                db_manager=self.db
-            ).pack(fill="both", expand=True)
-        elif screen == "bills":
-            BillManagementModule(
-                self.dashboard.content_frame,
-                db_manager=self.db,
-                invoice_generator=self.invoice_generator,
-                on_edit_bill=lambda sale_id: self.dashboard._navigate("billing", sale_id=sale_id)
-            ).pack(fill="both", expand=True)
+        try:
+            if screen == "dashboard":
+                # Reload dashboard content
+                self.dashboard.load_dashboard_content()
+            elif screen == "billing":
+                BillingModule(
+                    self.dashboard.content_frame,
+                    db_manager=self.db,
+                    invoice_generator=self.invoice_generator,
+                    current_user=self.current_user,
+                    **kwargs # Pass sale_id if present
+                ).pack(fill="both", expand=True)
+            elif screen == "purchases":
+                PurchaseManagementModule(
+                    self.dashboard.content_frame,
+                    db_manager=self.db,
+                    invoice_generator=self.invoice_generator,
+                    purchase_invoice_generator=self.purchase_invoice_generator,
+                    on_edit_purchase=lambda pid: self.dashboard._navigate("new_stock", purchase_id=pid)
+                ).pack(fill="both", expand=True)
+            elif screen == "stock":
+                StockManagementModule(
+                    self.dashboard.content_frame,
+                    db_manager=self.db,
+                    on_add_stock=lambda item_id=None, purchase_id=None: (
+                        self.dashboard._navigate("new_stock", purchase_id=purchase_id)
+                        if purchase_id
+                        else self.dashboard._navigate("new_stock", prefill_item_id=item_id)
+                    )
+                ).pack(fill="both", expand=True)
+            elif screen == "new_stock":
+                NewStockModule(
+                    self.dashboard.content_frame,
+                    db_manager=self.db,
+                    purchase_invoice_generator=self.purchase_invoice_generator,
+                    on_new_supplier=lambda: self.dashboard._navigate("suppliers"),
+                    **kwargs
+                ).pack(fill="both", expand=True)
+            elif screen == "search":
+                GlobalSearchModule(
+                    self.dashboard.content_frame,
+                    db_manager=self.db
+                ).pack(fill="both", expand=True)
+            elif screen == "reports":
+                ReportsModule(
+                    self.dashboard.content_frame,
+                    db_manager=self.db
+                ).pack(fill="both", expand=True)
+            elif screen == "settings":
+                SettingsModule(
+                    self.dashboard.content_frame,
+                    db_manager=self.db,
+                    current_user=self.current_user
+                ).pack(fill="both", expand=True)
+            elif screen == "bills":
+                BillManagementModule(
+                    self.dashboard.content_frame,
+                    db_manager=self.db,
+                    invoice_generator=self.invoice_generator,
+                    on_edit_sale=lambda sid: self.dashboard._navigate("billing", sale_id=sid)
+                ).pack(fill="both", expand=True)
+            elif screen == "suppliers":
+                SupplierMasterModule(
+                    self.dashboard.content_frame,
+                    db_manager=self.db
+                ).pack(fill="both", expand=True)
+            elif screen == "salesmen":
+                SalesmanMasterModule(
+                    self.dashboard.content_frame,
+                    db_manager=self.db
+                ).pack(fill="both", expand=True)
+        except Exception as e:
+            import traceback
+            err_msg = traceback.format_exc()
+            logging.error(f"Navigation error to {screen}: {err_msg}")
+            print("NAVIGATION CRASH:", err_msg)
+            import tkinter.messagebox
+            tkinter.messagebox.showerror("Module Error", f"Failed to load module {screen}\n\n{str(e)}\n\nCheck debug.log for details.")
+
     
+
     def _check_admin_pin(self) -> bool:
         """Prompt for Admin PIN"""
         req_pin = self.db.get_setting(config.SETTING_REQUIRE_ADMIN_PIN)

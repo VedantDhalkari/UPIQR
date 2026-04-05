@@ -14,6 +14,8 @@ class GlobalSearchModule(ctk.CTkFrame):
     """Global search interface"""
     
     def __init__(self, parent, db_manager, **kwargs):
+        # Prevent CustomTkinter from crashing on unknown navigation attributes
+        kwargs.pop("current_user", None)
         super().__init__(parent, fg_color="transparent", **kwargs)
         
         self.db = db_manager

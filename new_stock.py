@@ -14,6 +14,11 @@ class NewStockModule(ctk.CTkFrame):
     """Purchase Management / Manage Receiving"""
     
     def __init__(self, parent, db_manager, purchase_invoice_generator, purchase_id=None, **kwargs):
+        # Extract custom kwargs BEFORE passing to CTkFrame (it rejects unknowns)
+        self.prefill_item_id = kwargs.pop("prefill_item_id", None)
+        kwargs.pop("on_new_supplier", None)  
+        kwargs.pop("current_user", None) # Safe-pop navigation-only user reference
+        
         super().__init__(parent, fg_color="transparent", **kwargs)
         
         self.db = db_manager
@@ -21,7 +26,6 @@ class NewStockModule(ctk.CTkFrame):
         self.cart = [] 
         self.mode = "RECEIVE" # RECEIVE or RETURN
         self.editing_purchase_id = purchase_id
-        self.prefill_item_id = kwargs.get("prefill_item_id", None)
         
         # Apply Base Font Size
         try:
@@ -94,7 +98,7 @@ class NewStockModule(ctk.CTkFrame):
             
             self.gst_entry.delete(0, 'end'); self.gst_entry.insert(0, str(gst_amt))
             self.expenses_entry.delete(0, 'end'); self.expenses_entry.insert(0, str(exp))
-            if agent: self.agent_combo.set(agent)
+            if agent: self.agent_combo.delete(0, 'end'); self.agent_combo.insert(0, agent)
             if transp: self.transport_entry.delete(0, 'end'); self.transport_entry.insert(0, transp)
             if lr: self.lr_no_entry.delete(0, 'end'); self.lr_no_entry.insert(0, lr)
             
@@ -102,17 +106,17 @@ class NewStockModule(ctk.CTkFrame):
             
             try:
                 items = self.db.execute_query(
-                    "SELECT item_id, sku_code, item_name, quantity, purchase_rate, sale_rate, total_amount, brand, gst_percentage, hsn_code FROM purchase_items WHERE purchase_id = ?",
+                    "SELECT item_id, sku_code, item_name, quantity, purchase_rate, mrp, sale_rate, total_amount, brand, gst_percentage, hsn_code FROM purchase_items WHERE purchase_id = ?",
                     (self.editing_purchase_id,)
                 )
             except:
                 items = self.db.execute_query(
-                    "SELECT item_id, sku_code, item_name, quantity, purchase_rate, sale_rate, total_amount, brand, gst_percentage, '' as hsn_code FROM purchase_items WHERE purchase_id = ?",
+                    "SELECT item_id, sku_code, item_name, quantity, purchase_rate, 0 as mrp, sale_rate, total_amount, brand, gst_percentage, '' as hsn_code FROM purchase_items WHERE purchase_id = ?",
                     (self.editing_purchase_id,)
                 )
             
             for it in items:
-                i_id, sku, name, qty, p_rate, s_rate, t_amt, brand, gst_pct, hsn = it
+                i_id, sku, name, qty, p_rate, mrp_val, s_rate, t_amt, brand, gst_pct, hsn = it
                 barcode = ""
                 inv_res = self.db.execute_query("SELECT barcode, category FROM inventory WHERE item_id = ?", (i_id,))
                 cat = "Saree"
@@ -123,7 +127,7 @@ class NewStockModule(ctk.CTkFrame):
                 self.cart.append({
                     "sku": sku, "barcode": barcode, "name": name, "hsn_code": hsn or "", "brand": brand, "gst_pct": gst_pct or 0,
                     "qty": qty, "pur_rate": p_rate, "pur_rate_w_gst": t_amt / qty if qty > 0 else p_rate,
-                    "sale_rate": s_rate, "total": t_amt, 
+                    "mrp": mrp_val or 0, "sale_rate": s_rate, "total": t_amt, 
                     "gst_amount": t_amt - (qty * p_rate), "mode": "RECEIVE", "category": cat
                 })
             self._refresh_grid()
@@ -134,10 +138,6 @@ class NewStockModule(ctk.CTkFrame):
         """Top row: Party Name, Supplier Name, Agent Name"""
         card = ctk.CTkFrame(self.content_scroll, fg_color=config.COLOR_BG_CARD)
         card.pack(fill="x", pady=(0, config.SPACING_SM), padx=config.SPACING_SM)
-        
-        # Grid Layout for fields
-        # Row 1: Party Name | Supplier Name | Agent Name
-        # Row 2: Category | Item Name | Brand
         
         pad = config.SPACING_SM
         
@@ -150,8 +150,16 @@ class NewStockModule(ctk.CTkFrame):
         
         # Party Name (Supplier) - This is the main one
         self.party_combo = self._create_labeled_combo(cw, "Party Name / Supplier*", 0, self._get_suppliers() + ["+ Add New"])
+        self.party_combo.bind("<<ComboboxSelected>>", self._on_supplier_select)
+        # Refresh supplier list every time the dropdown is clicked
+        self.party_combo.bind("<Button-1>", self._refresh_supplier_combo)
+        
         self.supplier_combo = self._create_labeled_input(cw, "Supplier Name (Ref)", 1) # Optional ref
         self.agent_combo = self._create_labeled_input(cw, "Agent Name", 2)
+        
+        self.supplier_info_label = ctk.CTkLabel(card, text="", font=("Arial", self.font_sm),
+                                               text_color=config.COLOR_PRIMARY, wraplength=700)
+        self.supplier_info_label.pack(fill="x", padx=pad * 2, anchor="w")
         
         # Row 2 (Filters/Defaults for entry)
         cw2 = ctk.CTkFrame(card, fg_color="transparent")
@@ -206,8 +214,8 @@ class NewStockModule(ctk.CTkFrame):
         cw = ctk.CTkFrame(card, fg_color="transparent")
         cw.pack(fill="x", padx=5, pady=5)
         
-        # Fields: SKU, Barcode, Item Name, HSN, Brand, Pur Rate, GST, Sale Rate, Qty
-        fields = ["SKU (Auto)", "Barcode*", "Item Name*", "HSN*", "Brand", "Pur.Rate*", "GST %*", "Sale Rate*", "Qty*"]
+        # Fields: SKU, Barcode, Item Name, HSN, Brand, Pur Rate, GST, MRP, Sale Rate, Qty
+        fields = ["SKU (Auto)", "Barcode*", "Item Name*", "HSN*", "Brand", "Pur.Rate*", "GST %*", "MRP*", "Sale Rate*", "Qty*"]
         self.entry_vars = {}
         
         for i, f in enumerate(fields):
@@ -227,13 +235,19 @@ class NewStockModule(ctk.CTkFrame):
             if key == "sku":
                 entry.configure(state="readonly")
             
+            # ALL fields in entry row are now editable for faster runtime adjustments
+            entry.configure(state="normal")
+            
             if key == "barcode":
                 entry.bind("<Return>", self._on_barcode_enter)
                 entry.placeholder_text = "Scan/Enter"
                 
         # Add Button
-        self.add_btn = ctk.CTkButton(cw, text="⬇ Add", width=60, command=self._add_to_grid)
+        self.add_btn = ctk.CTkButton(cw, text="⬇ Add [Ctrl+Enter]", width=120, command=self._add_to_grid)
         self.add_btn.grid(row=1, column=len(fields), padx=5)
+        
+        self.duplicate_notice = ctk.CTkLabel(card, text="", font=("Arial", self.font_sm, "bold"), text_color=config.COLOR_SUCCESS)
+        self.duplicate_notice.pack(anchor="e", padx=20)
         
         # Auto-fill first sequenced SKU
         self._prefill_next_sku()
@@ -253,7 +267,8 @@ class NewStockModule(ctk.CTkFrame):
         style.map("NewStock.Treeview.Heading", background=[('active', config.COLOR_PRIMARY_DARK)])
         style.map("NewStock.Treeview", background=[('selected', '#B4D5F0')])
         
-        self.columns = ("sku", "barcode", "category", "hsn", "brand", "name", "pur_rate", "gst_pct", "pur_rate_gst", "sale_rate", "qty", "total")
+        # Treeview Columns
+        self.columns = ("sku", "barcode", "cat", "hsn", "brand", "name", "rate", "gst", "rate_gst", "mrp", "sale", "qty", "total")
         self.tree = ttk.Treeview(self.grid_frame, columns=self.columns, show="headings", style="NewStock.Treeview", height=8)
         
         vsb = ttk.Scrollbar(self.grid_frame, orient="vertical", command=self.tree.yview)
@@ -263,18 +278,19 @@ class NewStockModule(ctk.CTkFrame):
         vsb.pack(side="right", fill="y")
         
         headings = [
-            ("sku", "SKU", 60),
-            ("barcode", "Barcode", 100),
-            ("category", "Category", 80),
-            ("hsn", "HSN", 70),
-            ("brand", "Brand", 90),
-            ("name", "Item Name", 230),
-            ("pur_rate", "Pur.Rate", 80),
-            ("gst_pct", "GST %", 60),
-            ("pur_rate_gst", "Rate(w/GST)", 90),
-            ("sale_rate", "Sale Rate", 80),
-            ("qty", "Qty", 60),
-            ("total", "Total", 90)
+            ("sku",      "SKU",       60),
+            ("barcode",  "Barcode",   100),
+            ("cat",      "Category",  80),
+            ("hsn",      "HSN",       70),
+            ("brand",     "Brand",     90),
+            ("name",     "Item Name", 230),
+            ("rate",     "Rate",      80),
+            ("gst",      "GST %",     60),
+            ("rate_gst", "Rate+G",    90),
+            ("mrp",      "MRP",       80),
+            ("sale",     "Sale Rate", 85),
+            ("qty",      "Qty",       60),
+            ("total",    "Total",     95)
         ]
         
         for col, text, width in headings:
@@ -301,9 +317,9 @@ class NewStockModule(ctk.CTkFrame):
         col_name = self.columns[col_idx]
         
         editable_cols = {
-            "name": "name", "category": "category", "brand": "brand",
-            "qty": "qty", "pur_rate": "pur_rate", "sale_rate": "sale_rate", 
-            "gst_pct": "gst_pct", "hsn": "hsn_code"
+            "name": "name", "cat": "category", "brand": "brand",
+            "qty": "qty", "rate": "pur_rate", "sale": "sale_rate", 
+            "gst": "gst_pct", "hsn": "hsn_code", "mrp": "mrp"
         }
         if col_name not in editable_cols: return
         
@@ -385,9 +401,32 @@ class NewStockModule(ctk.CTkFrame):
                                       fg_color=config.COLOR_SUCCESS, width=150)
         self.save_btn.pack(side="right", padx=10)
         
-        # Bind F10 for Save Purchase globally while this frame exists
-        self.after(100, lambda: self.winfo_toplevel().bind("<F10>", lambda e: self._save_purchase()))
-        self.bind("<Destroy>", lambda e: self.winfo_toplevel().unbind("<F10>"))
+        # Keyboard shortcuts
+        # F10 = Save, Esc = Close (Toplevel or destroy frame), Ctrl+Enter = Add to grid,
+        # Delete on grid = remove row
+        try:
+            self.after(100, lambda: self.winfo_toplevel().bind("<F10>", lambda e: self._save_purchase()))
+            self.bind("<Destroy>", lambda e: self._unbind_shortcuts())
+            self.after(150, self._bind_local_shortcuts)
+        except:
+            pass
+
+    def _bind_local_shortcuts(self):
+        try:
+            top = self.winfo_toplevel()
+            top.bind("<Control-Return>", lambda e: self._add_to_grid(), add="+")
+            top.bind("<Escape>", lambda e: self.destroy(), add="+")
+            top.bind("<F1>", lambda e: self.entry_vars['barcode'].focus_set(), add="+")
+        except:
+            pass
+
+    def _unbind_shortcuts(self):
+        try:
+            top = self.winfo_toplevel()
+            top.unbind("<F10>")
+            top.unbind("<Control-Return>")
+        except:
+            pass
 
     # --- Helpers ---
     def _create_labeled_input(self, parent, label, col):
@@ -406,7 +445,53 @@ class NewStockModule(ctk.CTkFrame):
         try:
             res = self.db.execute_query("SELECT name FROM suppliers ORDER BY name")
             return [r[0] for r in res] if res else []
-        except: return []
+        except:
+            return []
+
+    def _refresh_supplier_combo(self, event=None):
+        """Refresh supplier list in combo (called on click)"""
+        try:
+            names = self._get_suppliers() + ["+ Add New"]
+            self.party_combo.configure(values=names)
+        except:
+            pass
+
+    def _on_supplier_select(self, event=None):
+        name = self.party_combo.get()
+        if name == "+ Add New":
+            messagebox.showinfo("Supplier Master",
+                "Please go to 'Supplier Master' from the sidebar to add a new supplier.\n"
+                "Once saved there, return here and click the dropdown to refresh the list.")
+            self.party_combo.set("")
+            return
+            
+        try:
+            res = self.db.execute_query(
+                "SELECT agent_name, transport, phone, city, gstin, address, email, state, category FROM suppliers WHERE name = ?",
+                (name,)
+            )
+            if res:
+                agent, transport, phone, city, gstin, address, email, state, category = res[0]
+                if agent:
+                    self.agent_combo.delete(0, 'end')
+                    self.agent_combo.insert(0, agent)
+                if transport:
+                    self.transport_entry.delete(0, 'end')
+                    self.transport_entry.insert(0, transport)
+                    
+                info_parts = [
+                    f"📞 {phone}" if phone else None,
+                    f"🏙️ {city}, {state}" if city else None,
+                    f"🏢 {category}" if category else None,
+                    f"📎 GSTIN: {gstin}" if gstin else None,
+                    f"✉️ {email}" if email else None,
+                ]
+                info_text = "  |  ".join(p for p in info_parts if p)
+                self.supplier_info_label.configure(
+                    text=f"✓ Supplier Connected: {name}  —  {info_text}" if info_text else f"✓ {name} connected"
+                )
+        except Exception as e:
+            print(f"Error auto-filling supplier info: {e}")
 
     def _toggle_mode(self):
         if self.mode_switch.get():
@@ -449,38 +534,90 @@ class NewStockModule(ctk.CTkFrame):
 
     def _on_barcode_enter(self, event):
         barcode = self.entry_vars['barcode'].get().strip()
-        if not barcode: return
-        
-        sku = self.entry_vars['sku'].get().strip()
+        self.duplicate_notice.configure(text="")
+        if not barcode:
+            return
         
         # Check if already in cart
         for item in self.cart:
             if item['barcode'] == barcode:
-                messagebox.showwarning("Already Available", f"Barcode {barcode} is already in the cart!")
-                return
+                # Already in cart - just show notice, do NOT block
+                self.duplicate_notice.configure(
+                    text=f"⚠️ Barcode {barcode} already in current cart. You can still add a new entry.",
+                    text_color=config.COLOR_WARNING
+                )
+                break
         
+        # Always look up from DB to pre-fill item details
         try:
             res = self.db.execute_query("""
-                SELECT saree_type, hsn_code, purchase_price, selling_price, brand, gst_percentage 
+                SELECT saree_type, hsn_code, purchase_price, selling_price, brand, gst_percentage, category, supplier_name
                 FROM inventory WHERE barcode = ?
             """, (barcode,))
         except:
             res = self.db.execute_query("""
-                SELECT saree_type, '' as hsn_code, purchase_price, selling_price, brand, gst_percentage 
+                SELECT saree_type, '' as hsn_code, purchase_price, selling_price, brand, gst_percentage, category, supplier_name
                 FROM inventory WHERE barcode = ?
             """, (barcode,))
             
         if res:
-            name, hsn, pur, sale, brand, gst_pct = res[0]
+            name, hsn, pur, sale, brand, gst_pct, category, last_supplier = res[0]
             self.entry_vars['item_name'].delete(0, "end"); self.entry_vars['item_name'].insert(0, name)
             if hsn: self.entry_vars['hsn'].delete(0, "end"); self.entry_vars['hsn'].insert(0, hsn)
             self.entry_vars['pur_rate'].delete(0, "end"); self.entry_vars['pur_rate'].insert(0, str(pur))
+            # Pre-fill MRP if exists, otherwise same as sale
+            mrp_actual = res[0][3] if len(res[0]) > 8 else sale # Fetching manually below
+            try:
+                mrp_res = self.db.execute_query("SELECT mrp FROM inventory WHERE barcode=?", (barcode,))
+                mrp_val = mrp_res[0][0] if mrp_res else sale
+            except: mrp_val = sale
+            
+            self.entry_vars['mrp'].delete(0, "end"); self.entry_vars['mrp'].insert(0, str(mrp_val))
             self.entry_vars['sale_rate'].delete(0, "end"); self.entry_vars['sale_rate'].insert(0, str(sale))
             if brand: 
                 self.entry_vars['brand'].delete(0, "end"); self.entry_vars['brand'].insert(0, brand)
             if gst_pct is not None:
                 self.entry_vars['gst_%'].delete(0, "end"); self.entry_vars['gst_%'].insert(0, str(gst_pct))
+            if category:
+                try: self.cat_filter.set(category)
+                except: pass
             
+            # Ensure fields remain editable after pre-filling
+            for key in ("pur_rate", "mrp", "sale_rate", "gst_%", "item_name", "hsn", "brand"):
+                if key in self.entry_vars:
+                    self.entry_vars[key].configure(state="normal")
+            
+            # Show history and supplier info for this item
+            try:
+                history = self.db.execute_query(
+                    """SELECT COUNT(*), SUM(quantity_added), MAX(date_added), supplier_name 
+                       FROM stock_entries WHERE item_id = (SELECT item_id FROM inventory WHERE barcode = ?)
+                       GROUP BY supplier_name ORDER BY MAX(date_added) DESC LIMIT 1""",
+                    (barcode,)
+                )
+                curr_qty_res = self.db.execute_query(
+                    "SELECT quantity FROM inventory WHERE barcode = ?", (barcode,)
+                )
+                curr_qty = curr_qty_res[0][0] if curr_qty_res else 0
+                
+                if history:
+                    cnt, total_qty, last_date, sup_name = history[0]
+                    supplier_info = f" | Last Supplier: {sup_name}" if sup_name else ""
+                    last_date_str = str(last_date)[:10] if last_date else "N/A"
+                    self.duplicate_notice.configure(
+                        text=f"ℹ️ Existing Item — Current Stock: {curr_qty} pcs | Last received: {last_date_str}{supplier_info}. Adding will append correctly.",
+                        text_color=config.COLOR_SUCCESS
+                    )
+                else:
+                    self.duplicate_notice.configure(
+                        text=f"ℹ️ Existing item found (Current Stock: {curr_qty}). Fields pre-filled. Update rates if needed.",
+                        text_color=config.COLOR_SUCCESS
+                    )
+            except:
+                self.duplicate_notice.configure(
+                    text="ℹ️ Existing Item Found: Adding stock will append quantity correctly.",
+                    text_color=config.COLOR_SUCCESS
+                )
             self.entry_vars['qty'].focus_set()
         else:
             self.entry_vars['item_name'].focus_set()
@@ -508,28 +645,23 @@ class NewStockModule(ctk.CTkFrame):
                 messagebox.showerror("Validation Error", "HSN Code is required when GST > 0%")
                 return
             
-            # Prevent duplicate barcode in database
-            if self.mode == "RECEIVE":
-                existing = self.db.execute_query("SELECT 1 FROM inventory WHERE barcode = ?", (barcode,))
-                if existing:
-                    messagebox.showwarning("Already Available", f"Barcode '{barcode}' is already available in the system!")
+            # Check duplicate in cart
+            for item in self.cart:
+                if item['barcode'] == barcode:
+                    messagebox.showwarning("Already Available", f"Barcode '{barcode}' is already in the cart!")
                     return
-                # Check duplicate in cart
-                for item in self.cart:
-                    if item['barcode'] == barcode:
-                        messagebox.showwarning("Already Available", f"Barcode '{barcode}' is already in the cart!")
-                        return
             
             # Smart GST Calculation exactly like Billing
             gst_amount_per_unit = rate * (gst_pct / 100)
             pur_rate_w_gst = rate + gst_amount_per_unit
+            mrp = float(self.entry_vars['mrp'].get() or 0)
             
             total = pur_rate_w_gst * qty
             total_gst_for_row = gst_amount_per_unit * qty
             
             item = {
                 "sku": sku, "barcode": barcode, "name": name, "hsn_code": hsn, "brand": brand, "gst_pct": gst_pct,
-                "qty": qty, "pur_rate": rate, "pur_rate_w_gst": pur_rate_w_gst, "sale_rate": sale, 
+                "qty": qty, "pur_rate": rate, "pur_rate_w_gst": pur_rate_w_gst, "mrp": mrp, "sale_rate": sale, 
                 "total": total, "gst_amount": total_gst_for_row,
                 "mode": self.mode, "category": self.cat_filter.get()
             }
@@ -542,8 +674,10 @@ class NewStockModule(ctk.CTkFrame):
             self.entry_vars['item_name'].delete(0, "end")
             self.entry_vars['qty'].delete(0, "end")
             self.entry_vars['pur_rate'].delete(0, "end")
+            self.entry_vars['mrp'].delete(0, "end")
             self.entry_vars['sale_rate'].delete(0, "end")
             self.entry_vars['brand'].delete(0, "end")
+            self.duplicate_notice.configure(text="")
             self._prefill_next_sku()
             self.entry_vars['barcode'].focus_set()
             
@@ -569,9 +703,10 @@ class NewStockModule(ctk.CTkFrame):
             
             # Fallback for old items loaded without pur_rate_w_gst
             pur_w_gst = item.get('pur_rate_w_gst', item['pur_rate'] + (item['pur_rate'] * item['gst_pct'] / 100))
+            mrp_val = item.get('mrp', 0.0)
             
             vals = (item['sku'], item['barcode'], item['category'], item.get('hsn_code', ''), item['brand'], item['name'], 
-                    f"{item['pur_rate']:.2f}", f"{item['gst_pct']}%", f"{pur_w_gst:.2f}", 
+                    f"{item['pur_rate']:.2f}", f"{item['gst_pct']}%", f"{pur_w_gst:.2f}", f"{mrp_val:.2f}",
                     f"{item['sale_rate']:.2f}", str(q_val), f"{t_val:.2f}")
             
             
@@ -675,9 +810,9 @@ class NewStockModule(ctk.CTkFrame):
                 if res:
                     iid = res[0][0]
                     self.db.execute_query(
-                        """UPDATE inventory SET saree_type=?, purchase_price=?, selling_price=?, 
+                        """UPDATE inventory SET saree_type=?, purchase_price=?, mrp=?, selling_price=?, 
                            brand=?, gst_percentage=?, hsn_code=?, category=?, supplier_name=?, sku_code=? WHERE item_id=?""",
-                        (item['name'], item['pur_rate'], item['sale_rate'], item['brand'], item['gst_pct'], 
+                        (item['name'], item['pur_rate'], item['mrp'], item['sale_rate'], item['brand'], item['gst_pct'], 
                          item.get('hsn_code', ''), item['category'], party, item['sku'], iid),
                         cursor=cursor
                     )
@@ -685,10 +820,10 @@ class NewStockModule(ctk.CTkFrame):
                     # Fix: Add defaults for material, color, design to avoid NOT NULL constraint errors
                     iid = self.db.execute_insert(
                         """INSERT INTO inventory (sku_code, barcode, saree_type, quantity, purchase_price, 
-                           selling_price, brand, gst_percentage, category, supplier_name,
+                           mrp, selling_price, brand, gst_percentage, category, supplier_name,
                            hsn_code, material, color, design)
-                           VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (item['sku'], item['barcode'], item['name'], item['pur_rate'], item['sale_rate'], 
+                           VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (item['sku'], item['barcode'], item['name'], item['pur_rate'], item['mrp'], item['sale_rate'], 
                          item['brand'], item['gst_pct'], item['category'], party, item.get('hsn_code', ''),
                          "N/A", "N/A", "N/A"), # Defaults
                         cursor=cursor
@@ -704,10 +839,10 @@ class NewStockModule(ctk.CTkFrame):
                 # Purchase Item Record
                 self.db.execute_insert(
                     """INSERT INTO purchase_items (purchase_id, item_id, sku_code, item_name, 
-                       quantity, purchase_rate, sale_rate, total_amount, brand, gst_percentage, hsn_code)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       quantity, purchase_rate, mrp, sale_rate, total_amount, brand, gst_percentage, hsn_code)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (pid, iid, item['sku'], item['name'], item['qty'], item['pur_rate'], 
-                     item['sale_rate'], item['total'], item['brand'], item['gst_pct'], item.get('hsn_code', '')),
+                     item['mrp'], item['sale_rate'], item['total'], item['brand'], item['gst_pct'], item.get('hsn_code', '')),
                     cursor=cursor
                 )
                 

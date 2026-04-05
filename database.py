@@ -40,6 +40,8 @@ class DatabaseManager:
         """Close database connection"""
         if self.conn:
             self.conn.close()
+        self.conn = None
+        self.cursor = None
     
     def initialize_database(self):
         """Create all necessary tables and default data"""
@@ -68,6 +70,7 @@ class DatabaseManager:
                 design TEXT,
                 quantity INTEGER DEFAULT 0,
                 purchase_price REAL DEFAULT 0,
+                mrp REAL DEFAULT 0,
                 selling_price REAL DEFAULT 0,
                 supplier_name TEXT,
                 category TEXT,
@@ -154,6 +157,32 @@ class DatabaseManager:
             self.cursor.execute("ALTER TABLE sales ADD COLUMN payment_status TEXT DEFAULT 'Paid'")
         except: pass
         
+        # New Phase 8 Columns (Users Permissions & Supplier fixes)
+        try:
+            self.cursor.execute("ALTER TABLE users ADD COLUMN permissions TEXT DEFAULT '{}'")
+        except: pass
+        try:
+            self.cursor.execute("ALTER TABLE suppliers ADD COLUMN email TEXT")
+        except: pass
+        try:
+            self.cursor.execute("ALTER TABLE suppliers ADD COLUMN city TEXT")
+        except: pass
+        try:
+            self.cursor.execute("ALTER TABLE suppliers ADD COLUMN state TEXT")
+        except: pass
+        try:
+            self.cursor.execute("ALTER TABLE suppliers ADD COLUMN category TEXT")
+        except: pass
+        try:
+            self.cursor.execute("ALTER TABLE suppliers ADD COLUMN agent_name TEXT")
+        except: pass
+        try:
+            self.cursor.execute("ALTER TABLE suppliers ADD COLUMN transport TEXT")
+        except: pass
+        try:
+            self.cursor.execute("ALTER TABLE suppliers ADD COLUMN notes TEXT")
+        except: pass
+        
         # New Phase 5 Columns
         try:
             self.cursor.execute("ALTER TABLE purchases ADD COLUMN agent_name TEXT")
@@ -171,6 +200,9 @@ class DatabaseManager:
         # New Phase 6 Columns
         try:
             self.cursor.execute("ALTER TABLE inventory ADD COLUMN barcode TEXT")
+        except: pass
+        try:
+            self.cursor.execute("ALTER TABLE inventory ADD COLUMN mrp REAL DEFAULT 0")
         except: pass
         try:
             self.cursor.execute("ALTER TABLE purchases ADD COLUMN gst_amount REAL DEFAULT 0")
@@ -213,6 +245,15 @@ class DatabaseManager:
         try:
             self.cursor.execute("ALTER TABLE sale_items ADD COLUMN hsn_code TEXT")
         except: pass
+        try:
+            self.cursor.execute("ALTER TABLE sale_items ADD COLUMN mrp REAL DEFAULT 0")
+        except: pass
+        try:
+            self.cursor.execute("ALTER TABLE purchase_items ADD COLUMN mrp REAL DEFAULT 0")
+        except: pass
+        try:
+            self.cursor.execute("ALTER TABLE sale_items ADD COLUMN mrp REAL DEFAULT 0")
+        except: pass
         
         # Ensure default UPI payment settings exist
         try:
@@ -231,6 +272,7 @@ class DatabaseManager:
                 sku_code TEXT NOT NULL,
                 item_name TEXT NOT NULL,
                 quantity INTEGER NOT NULL,
+                mrp REAL DEFAULT 0,
                 unit_price REAL NOT NULL,
                 total_price REAL NOT NULL,
                 FOREIGN KEY (sale_id) REFERENCES sales(sale_id),
@@ -284,6 +326,41 @@ class DatabaseManager:
                 created_by TEXT
             )
         ''')
+        
+        # Removed duplicate Suppliers table creation block to prevent confusion.
+        
+        # Salesmen table
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS salesmen (
+                salesman_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                phone TEXT,
+                address TEXT,
+                joined_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                status TEXT DEFAULT 'Active'
+            )
+        ''')
+        
+        # MIGRATION: salesman column on sales
+        try:
+            self.cursor.execute("ALTER TABLE sales ADD COLUMN salesman TEXT")
+        except: pass
+        # MIGRATION: salesman column on sale_items (optional, for item-level tracking)
+        try:
+            self.cursor.execute("ALTER TABLE sales ADD COLUMN salesman_id INTEGER")
+        except: pass
+
+        # New Phase 9 Columns (Salesman Unique Number)
+        # SQLite doesn't natively support adding UNIQUE constraints via simple ALTER TABLE easily
+        try:
+            self.cursor.execute("ALTER TABLE salesmen ADD COLUMN unique_number TEXT")
+        except: pass
+        try:
+            self.cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_salesman_unique ON salesmen(unique_number)")
+        except: pass
+
+        # Performance Upgrades (Phase 10)
+        self._add_performance_indexes()
 
         # Create default admin user
         try:
@@ -294,13 +371,38 @@ class DatabaseManager:
             )
         except sqlite3.IntegrityError:
             pass  # User already exists
+            
+        # Create default salesman
+        try:
+            self.cursor.execute("INSERT OR IGNORE INTO salesmen (name, unique_number, status) VALUES (?, ?, ?)", ("Store Admin", "101", "Active"))
+        except: pass
         
         # Initialize default settings
         self._initialize_settings()
+
         
         self.conn.commit()
         self.disconnect()
     
+    def _add_performance_indexes(self):
+        """Massive performance and speed upgrades for the database."""
+        indices = [
+            "CREATE INDEX IF NOT EXISTS idx_sales_date ON sales(sale_date)",
+            "CREATE INDEX IF NOT EXISTS idx_sales_salesman ON sales(salesman)",
+            "CREATE INDEX IF NOT EXISTS idx_sales_customer ON sales(customer_name)",
+            "CREATE INDEX IF NOT EXISTS idx_sales_items_sale_id ON sale_items(sale_id)",
+            "CREATE INDEX IF NOT EXISTS idx_inventory_barcode ON inventory(barcode)",
+            "CREATE INDEX IF NOT EXISTS idx_inventory_sku ON inventory(sku_code)",
+            "CREATE INDEX IF NOT EXISTS idx_purchases_date ON purchases(bill_date)",
+            "CREATE INDEX IF NOT EXISTS idx_stock_entries_item ON stock_entries(item_id)",
+            "CREATE INDEX IF NOT EXISTS idx_stock_entries_date ON stock_entries(date_added)"
+        ]
+        for query in indices:
+            try:
+                self.cursor.execute(query)
+            except:
+                pass
+                
     def _initialize_settings(self):
         """Initialize default settings"""
         default_settings = {
@@ -331,7 +433,8 @@ class DatabaseManager:
     
     def execute_query(self, query: str, params: tuple = (), cursor=None) -> List[Tuple]:
         """
-        Execute a SELECT query and return results
+        Execute a query and return results. Always uses a fresh isolated connection
+        unless an external cursor is provided (for transaction management).
         
         Args:
             query: SQL query string
@@ -344,19 +447,26 @@ class DatabaseManager:
         if cursor:
             cursor.execute(query, params)
             return cursor.fetchall()
-            
-        self.connect()
+        
+        # Fresh connection per call — prevents 'closed database' errors
+        conn = sqlite3.connect(self.db_name, timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL;")
         try:
-            self.cursor.execute(query, params)
-            results = self.cursor.fetchall()
-            self.conn.commit()
+            cur = conn.cursor()
+            cur.execute(query, params)
+            results = cur.fetchall()
+            conn.commit()
             return results
+        except Exception:
+            conn.rollback()
+            raise
         finally:
-            self.disconnect()
+            conn.close()
     
     def execute_insert(self, query: str, params: tuple = (), cursor=None) -> int:
         """
-        Execute an INSERT query and return the last row ID
+        Execute an INSERT query and return the last row ID. Always uses a fresh
+        isolated connection unless an external cursor is provided.
         
         Args:
             query: SQL INSERT query string
@@ -369,15 +479,21 @@ class DatabaseManager:
         if cursor:
             cursor.execute(query, params)
             return cursor.lastrowid
-            
-        self.connect()
+        
+        # Fresh connection per call — prevents 'closed database' errors
+        conn = sqlite3.connect(self.db_name, timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL;")
         try:
-            self.cursor.execute(query, params)
-            last_id = self.cursor.lastrowid
-            self.conn.commit()
+            cur = conn.cursor()
+            cur.execute(query, params)
+            last_id = cur.lastrowid
+            conn.commit()
             return last_id
+        except Exception:
+            conn.rollback()
+            raise
         finally:
-            self.disconnect()
+            conn.close()
 
     def add_stock_entry(self, item_id: int, qty: int, price: float, supplier: str, note: str = "", cursor=None):
         """Add a stock entry record"""
@@ -412,19 +528,24 @@ class DatabaseManager:
         )
     
     def delete_stock_entry(self, entry_id: int):
-        """Delete a stock entry and revert inventory quantity"""
-        # Get entry details first
-        entry = self.execute_query("SELECT item_id, quantity_added FROM stock_entries WHERE entry_id = ?", (entry_id,))
-        if not entry:
-            return
-            
-        item_id, qty = entry[0]
-        
-        # Revert inventory
-        self.execute_query("UPDATE inventory SET quantity = quantity - ? WHERE item_id = ?", (qty, item_id))
-        
-        # Delete entry
-        self.execute_query("DELETE FROM stock_entries WHERE entry_id = ?", (entry_id,))
+        """Delete a stock entry and revert inventory quantity — atomic transaction"""
+        conn = sqlite3.connect(self.db_name, timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL;")
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT item_id, quantity_added FROM stock_entries WHERE entry_id = ?", (entry_id,))
+            entry = cur.fetchall()
+            if not entry:
+                return
+            item_id, qty = entry[0]
+            cur.execute("UPDATE inventory SET quantity = quantity - ? WHERE item_id = ?", (qty, item_id))
+            cur.execute("DELETE FROM stock_entries WHERE entry_id = ?", (entry_id,))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def delete_bill(self, bill_number: str):
         """Delete a bill and revert stock"""

@@ -132,11 +132,34 @@ class Dashboard(ctk.CTkFrame):
             ("reports",   "Reports [F6]",         config.ICON_REPORTS,   lambda: self._navigate("reports")),
             ("bills",     "Manage Bills [F7]",    "🧾",                  lambda: self._navigate("bills")),
             ("purchases", "Purchases [F8]",       "📦",                  lambda: self._navigate("purchases")),
+            ("suppliers", "Supplier Master",      "🏭",                  lambda: self._navigate("suppliers")),
+            ("salesmen",  "Salesman Master",      "👔",                  lambda: self._navigate("salesmen")),
             ("calculator","Calculator [F9]",      "🧮",                  self._open_calculator),
             ("settings",  "Settings [F10]",       config.ICON_SETTINGS,  lambda: self._navigate("settings")),
         ]
         
+        perms = {}
+        if 'permissions' in self.current_user and self.current_user['permissions']:
+            p = self.current_user['permissions']
+            if isinstance(p, dict):
+                perms = p
+            elif isinstance(p, str):
+                import json
+                try:
+                    perms = json.loads(p)
+                except Exception: pass
+            
+        allowed_items = []
         for key, text, icon, command in nav_items:
+            # If Admin, allow all. If not, check perms
+            if self.current_user.get('role', '').lower() == 'admin':
+                allowed_items.append((key, text, icon, command))
+            else:
+                # 'dashboard' and 'calculator' are always allowed
+                if perms.get(key, False) or key in ['dashboard', 'calculator']:
+                    allowed_items.append((key, text, icon, command))
+        
+        for key, text, icon, command in allowed_items:
             btn = SidebarButton(nav_frame, text=text, icon=icon, command=command)
             btn.pack(fill="x", pady=config.SPACING_XS)
             self.nav_buttons[key] = btn
@@ -193,6 +216,18 @@ class Dashboard(ctk.CTkFrame):
         )
         role_label.pack(anchor="w")
         
+        # Switch User Button
+        switch_btn = SidebarButton(
+            user_frame,
+            text="",
+            icon="🔄",
+            command=self._logout, # Uses logout to return to Auth Screen
+            height=30,
+            fg_color="transparent",
+            text_color=config.COLOR_WARNING
+        )
+        switch_btn.pack(side="right", padx=(0, config.SPACING_SM))
+        
         # Logout button
         logout_btn = SidebarButton(
             user_frame,
@@ -203,17 +238,23 @@ class Dashboard(ctk.CTkFrame):
             fg_color="transparent",
             text_color=config.COLOR_DANGER
         )
-        logout_btn.pack(side="right", padx=config.SPACING_SM)
+        logout_btn.pack(side="right", padx=(config.SPACING_SM, 0))
     
     def _navigate(self, screen_name, **kwargs):
-        """Handle sidebar navigation"""
+        """Handle sidebar navigation mapped securely to permissions"""
+        # SECURITY CHECK: Block Global Shortcuts from bypassing permission bounds
+        if screen_name not in self.nav_buttons:
+            from tkinter import messagebox
+            messagebox.showerror("Access Restricted", 
+                                 f"You do not have permission to access the '{screen_name}' module.", 
+                                 parent=self.winfo_toplevel())
+            return
+            
         # Update active button
         if self.active_screen in self.nav_buttons:
             self.nav_buttons[self.active_screen].set_active(False)
         
-        if screen_name in self.nav_buttons:
-            self.nav_buttons[screen_name].set_active(True)
-        
+        self.nav_buttons[screen_name].set_active(True)
         self.active_screen = screen_name
         self.on_navigate(screen_name, **kwargs)
     
@@ -338,7 +379,16 @@ class Dashboard(ctk.CTkFrame):
         
         if transactions:
             headers = ["Bill No", "Customer", "Amount", "Date"]
-            rows = [[t[0], t[1] or "Walk-in", f"₹{t[2]:,.2f}", t[3][:16]] for t in transactions]
+            # Format dates to DD-MM-YYYY for display
+            formatted_rows = []
+            for t in transactions:
+                display_date = t[3][:10]
+                try:
+                    display_date = datetime.strptime(t[3][:10], "%Y-%m-%d").strftime("%d-%m-%Y")
+                except: pass
+                formatted_rows.append([t[0], t[1] or "Walk-in", f"₹{t[2]:,.2f}", display_date])
+            
+            rows = formatted_rows
             # Use ModernTable if it supports directly passing data, otherwise create it then pack it
             # Assuming ModernTable(parent, headers, rows) signature based on previous context
             ModernTable(trans_frame, headers, rows).pack(fill="x")

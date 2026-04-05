@@ -12,12 +12,14 @@ import os
 class BillManagementModule(ctk.CTkFrame):
     """Bill management interface"""
     
-    def __init__(self, parent, db_manager, invoice_generator, on_edit_bill=None, **kwargs):
+    def __init__(self, parent, db_manager, invoice_generator, on_edit_sale=None, **kwargs):
+        # Prevent CustomTkinter from crashing on unknown navigation attributes
+        kwargs.pop("on_edit_bill", None) 
         super().__init__(parent, fg_color="transparent", **kwargs)
         
         self.db = db_manager
         self.invoice_gen = invoice_generator
-        self.on_edit_bill = on_edit_bill
+        self.on_edit_bill = on_edit_sale
         
         # Header
         PageHeader(self, title="🧾 Bill Management").pack(fill="x", pady=(0, config.SPACING_LG))
@@ -59,7 +61,7 @@ class BillManagementModule(ctk.CTkFrame):
         style.configure("Bill.Treeview.Heading", background=config.COLOR_PRIMARY, foreground="white", font=("Arial", base_size, "bold"))
         style.map("Bill.Treeview", background=[('selected', '#B4D5F0')])
 
-        self.columns = ("sale_id", "bill_no", "date", "customer", "items", "total", "method")
+        self.columns = ("sale_id", "bill_no", "date", "customer", "salesman", "items", "total", "method")
         self.tree = ttk.Treeview(tree_container, columns=self.columns, show="headings", style="Bill.Treeview")
         
         vsb = ttk.Scrollbar(tree_container, orient="vertical", command=self.tree.yview)
@@ -70,12 +72,13 @@ class BillManagementModule(ctk.CTkFrame):
         
         headings = [
             ("sale_id", "ID", 0), # Hidden mostly or small
-            ("bill_no", "Bill No", 120),
+            ("bill_no", "Bill No", 100),
             ("date", "Date", 150),
-            ("customer", "Customer", 200),
+            ("customer", "Customer", 180),
+            ("salesman", "Salesman", 140),
             ("items", "Items", 80),
             ("total", "Total ₹", 100),
-            ("method", "Payment Status", 120)
+            ("method", "Payment Status", 110)
         ]
         
         for col, text, width in headings:
@@ -99,7 +102,7 @@ class BillManagementModule(ctk.CTkFrame):
         
         query = """
             SELECT s.sale_id, s.bill_number, s.sale_date, s.customer_name, s.customer_phone,
-                   s.final_amount, s.payment_status, COUNT(si.item_id) as item_count
+                   s.final_amount, s.payment_status, COUNT(si.item_id) as item_count, s.salesman
             FROM sales s
             LEFT JOIN sale_items si ON s.sale_id = si.sale_id
             WHERE 1=1
@@ -107,8 +110,8 @@ class BillManagementModule(ctk.CTkFrame):
         params = []
         
         if search_query:
-            query += """ AND (s.bill_number LIKE ? OR s.customer_name LIKE ? OR s.customer_phone LIKE ?)"""
-            params = [f"%{search_query}%"] * 3
+            query += """ AND (s.bill_number LIKE ? OR s.customer_name LIKE ? OR s.customer_phone LIKE ? OR s.salesman LIKE ?)"""
+            params = [f"%{search_query}%"] * 4
             
         query += " GROUP BY s.sale_id ORDER BY s.sale_date DESC LIMIT 100"
         
@@ -122,8 +125,9 @@ class BillManagementModule(ctk.CTkFrame):
             amount = f"₹{bill[5]:.2f}"
             status = bill[6] or 'Paid'
             items = f"{bill[7]} Pcs"
+            salesman_val = bill[8] or '-'
             
-            self.tree.insert("", "end", values=(sale_id, bill_no, date, customer, items, amount, status))
+            self.tree.insert("", "end", values=(sale_id, bill_no, date, customer, salesman_val, items, amount, status))
             
     def _get_selected_sale(self):
         sel = self.tree.selection()

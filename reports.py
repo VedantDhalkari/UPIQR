@@ -19,6 +19,8 @@ class ReportsModule(ctk.CTkFrame):
     """Reports and analytics interface"""
     
     def __init__(self, parent, db_manager, **kwargs):
+        # Prevent CustomTkinter from crashing on unknown navigation attributes
+        kwargs.pop("current_user", None)
         super().__init__(parent, fg_color="transparent", **kwargs)
         
         self.db = db_manager
@@ -129,6 +131,14 @@ class ReportsModule(ctk.CTkFrame):
             fg_color=config.COLOR_INFO,
             height=30,
             command=self._export_stock
+        ).pack(side="left", padx=config.SPACING_SM)
+        
+        ctk.CTkButton(
+            export_frame,
+            text="📥 Export Expenses",
+            fg_color=config.COLOR_DANGER,
+            height=30,
+            command=self._export_expenses
         ).pack(side="left", padx=config.SPACING_SM)
 
         # Reports content
@@ -258,6 +268,23 @@ class ReportsModule(ctk.CTkFrame):
                FROM inventory ORDER BY sku_code"""
         )
         self._export_csv("stock_inventory", headers, data)
+        
+    def _export_expenses(self):
+        """Export expenses data"""
+        headers = ["Expense ID", "Amount", "Category", "Description", "Date", "Created By"]
+        if hasattr(self, 'current_start_date') and self.current_start_date:
+            data = self.db.execute_query(
+                """SELECT expense_id, amount, category, description, expense_date, created_by
+                   FROM expenses WHERE DATE(expense_date) BETWEEN ? AND ?
+                   ORDER BY expense_date DESC""",
+                (self.current_start_date, self.current_end_date)
+            )
+        else:
+            data = self.db.execute_query(
+                """SELECT expense_id, amount, category, description, expense_date, created_by
+                   FROM expenses ORDER BY expense_date DESC"""
+            )
+        self._export_csv("expenses_report", headers, data)
 
     def _load_reports(self, custom=False):
         """Load reports for selected period"""
@@ -507,7 +534,7 @@ class ReportsModule(ctk.CTkFrame):
                FROM expenses
                WHERE DATE(expense_date) BETWEEN ? AND ?
                ORDER BY expense_date DESC
-               LIMIT 20""",
+               LIMIT 50""",
             (start_date, end_date)
         )
         

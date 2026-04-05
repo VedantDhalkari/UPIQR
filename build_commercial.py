@@ -35,8 +35,8 @@ def build_commercial():
         shutil.rmtree(obf_dir)
         
     # PyArmor 8 generates cross-platform obfuscated code
-    pyarmor_exe = os.path.join(os.path.dirname(sys.executable), "pyarmor.exe")
-    pyinstaller_exe = os.path.join(os.path.dirname(sys.executable), "pyinstaller.exe")
+    pyarmor_exe = "pyarmor"
+    pyinstaller_exe = "pyinstaller"
     
     # Collect specifically the source application code, omitting the dev-tools
     src_files = [f for f in glob.glob("*.py") if f not in ["build_commercial.py", "keygen.py"]]
